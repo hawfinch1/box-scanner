@@ -1,0 +1,3 @@
+# 앱 실행 의존성 + 개발·검증용 추가 의존성
+-r requirements.txt
+yfinance>=0.2   # verify.py 의 미국 시세 대조에만 사용 (앱 실행에는 불필요)
