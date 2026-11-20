@@ -1,4 +1,5 @@
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -9,6 +10,7 @@ import box
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
 
 
+KST = ZoneInfo("Asia/Seoul")  # 배포 서버는 UTC라 한국 시간으로 표시
 HISTORY_DAYS = 120  # 한 번에 받아 두는 일봉 수(조건을 바꿔도 다시 받지 않음)
 ALL_MARKETS = ["KOSPI", "KOSDAQ", "KOSDAQ GLOBAL"]
 
@@ -25,7 +27,7 @@ def load_all() -> tuple[pd.DataFrame, dict[str, pd.DataFrame], str]:
 
     data = box.fetch_many(listing["Code"].tolist(), HISTORY_DAYS, progress=tick)
     bar.empty()
-    return listing, data, dt.datetime.now().strftime("%m/%d %H:%M")
+    return listing, data, dt.datetime.now(KST).strftime("%m/%d %H:%M")
 
 
 st.title("📦 박스권 스캐너")
@@ -122,7 +124,7 @@ event = st.dataframe(
     },
 )
 st.download_button("CSV로 받기", view[cols].to_csv(index=False).encode("utf-8-sig"),
-                   file_name=f"박스권_{dt.date.today()}.csv", mime="text/csv")
+                   file_name=f"박스권_{dt.datetime.now(KST).date()}.csv", mime="text/csv")
 
 st.divider()
 rows = event.selection.rows if event and event.selection else []
