@@ -73,7 +73,10 @@ def list_nasdaq() -> pd.DataFrame:
          "Market": "NASDAQ"}
         for s in stocks if s.get("stockEndType") == "stock" and s.get("reutersCode")
     ]
-    return pd.DataFrame(rows).drop_duplicates("Key").reset_index(drop=True)
+    df = pd.DataFrame(rows).drop_duplicates("Key")
+    # 스팩 유닛(U)·워런트(W)·권리(R): 나스닥 5글자 티커 끝자리 규칙
+    df = df[~((df["Code"].str.len() == 5) & df["Code"].str[-1].isin(["U", "W", "R"]))]
+    return df.reset_index(drop=True)
 
 
 # ───────────────────────── 시세 ─────────────────────────
@@ -87,7 +90,7 @@ def _finish(df: pd.DataFrame, days: int) -> pd.DataFrame | None:
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.set_index("Date").astype(float).sort_index()
     df = df[df["Volume"] > 0]  # 거래정지일 제외
-    return df.tail(days)
+    return df.tail(days) if len(df) else None
 
 
 def fetch_krx(code: str, days: int) -> pd.DataFrame | None:
@@ -142,6 +145,59 @@ def fetch_many(keys: list[str], days: int, fetcher, workers: int = 16, progress=
     return out
 
 
+# ───────────────────────── 데이터 상태 ─────────────────────────
+
+_MARKET_HOURS = {  # 지역: (시간대, 장 시작, 확정 종가로 볼 시각)
+    "kr": ("Asia/Seoul", dt.time(9, 0), dt.time(15, 40)),
+    "us": ("America/New_York", dt.time(9, 30), dt.time(16, 15)),
+}
+
+
+def provisional_date(region: str, now: dt.datetime | None = None) -> dt.date | None:
+    """지금이 장중(또는 종가 확정 전)이면 오늘 현지 날짜를, 아니면 None을 돌려준다.
+    이 날짜의 일봉은 아직 바뀔 수 있는 잠정값이다."""
+    from zoneinfo import ZoneInfo
+    tz, open_t, settle_t = _MARKET_HOURS[region]
+    now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(ZoneInfo(tz))
+    if now.weekday() < 5 and open_t <= now.time() < settle_t:
+        return now.date()
+    return None
+
+
+def prepare(histories: dict[str, pd.DataFrame], prov_date: dt.date | None, drop_provisional: bool,
+            min_len: int) -> tuple[dict[str, pd.DataFrame], dict]:
+    """분석에 쓸 시세를 고르고, 무엇을 왜 뺐는지 집계한다.
+    - drop_provisional: 장중 잠정 봉을 빼고 전일 확정 종가까지만 사용
+    - 최근 거래일 시세가 없는 종목(거래정지 등)과 기간이 너무 짧은 종목은 제외"""
+    out: dict[str, pd.DataFrame] = {}
+    for k, df in histories.items():
+        if drop_provisional and prov_date is not None and len(df) and df.index[-1].date() == prov_date:
+            df = df.iloc[:-1]
+        if len(df):
+            out[k] = df
+    last_dates = pd.Series({k: df.index[-1].date() for k, df in out.items()})
+    ref = last_dates.max() if len(last_dates) else None
+    stale = [k for k, d in last_dates.items() if d < ref]
+    short = [k for k, df in out.items() if k not in stale and len(df) < min_len]
+    for k in stale + short:
+        out.pop(k, None)
+    # 거래일 달력: 분석 종목 절반 이상에 시세가 있는 날짜
+    if out:
+        counts = pd.Series(np.concatenate([df.index.values for df in out.values()])).value_counts()
+        calendar = pd.DatetimeIndex(sorted(counts[counts >= len(out) / 2].index))
+    else:
+        calendar = pd.DatetimeIndex([])
+    info = {
+        "calendar": calendar,
+        "ref_date": ref,
+        "provisional": bool(prov_date is not None and ref == prov_date),
+        "stale": len(stale),
+        "short": len(short),
+        "analyzed": len(out),
+    }
+    return out, info
+
+
 # ───────────────────────── 박스권 판별 ─────────────────────────
 
 def _check(close: np.ndarray, hi: np.ndarray, lo: np.ndarray, p: BoxParams) -> dict | None:
@@ -156,7 +212,7 @@ def _check(close: np.ndarray, hi: np.ndarray, lo: np.ndarray, p: BoxParams) -> d
     n = len(close)
     slope = np.polyfit(np.arange(n), close, 1)[0]
     drift = abs(slope * (n - 1))
-    if drift > height * p.max_drift_ratio:
+    if drift > height * p.max_drift_ratio + 1e-9:  # 부동소수점 오차로 경계값이 갈리지 않도록
         return None
     zone = height * p.touch_zone
     up_t = _count_touches(hi >= upper - zone)
@@ -169,6 +225,7 @@ def _check(close: np.ndarray, hi: np.ndarray, lo: np.ndarray, p: BoxParams) -> d
         "width_pct": width_pct,
         "upper_touches": up_t,
         "lower_touches": lo_t,
+        "drift_ratio": drift / height,
     }
 
 
@@ -202,6 +259,12 @@ def detect_box(df: pd.DataFrame, p: BoxParams) -> dict | None:
     if p.min_daily_vol_pct and not best["daily_vol"] >= p.min_daily_vol_pct:
         return None
     return best
+
+
+def missing_days(df: pd.DataFrame, calendar: pd.DatetimeIndex, start) -> int:
+    """start 이후 거래일 달력에 있는데 이 종목 시세에 없는 날 수(거래정지·수집 누락)."""
+    cal = calendar[calendar >= pd.Timestamp(start)]
+    return int(len(cal.difference(df.index)))
 
 
 def ma_check(df: pd.DataFrame, m: MAParams) -> dict | None:
@@ -254,6 +317,6 @@ def scan(histories: dict[str, pd.DataFrame], listing: pd.DataFrame, p: BoxParams
         "days": "박스기간(일)", "start": "시작일", "close": "현재가", "upper": "상단", "lower": "하단",
         "width_pct": "박스폭(%)", "position_pct": "박스내위치(%)", "upper_touches": "상단터치",
         "lower_touches": "하단터치", "avg_value": "평균거래대금", "ma_spread": "이평밀집도(%)",
-        "ref_gap": "기준이평 대비(%)", "daily_vol": "일변동성(%)",
+        "ref_gap": "기준이평 대비(%)", "daily_vol": "일변동성(%)", "drift_ratio": "추세비율",
     })
     return res.sort_values(["박스기간(일)", "박스폭(%)"], ascending=[False, True]).reset_index(drop=True)
