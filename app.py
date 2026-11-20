@@ -8,6 +8,7 @@ import streamlit as st
 
 import box
 import history_cases
+import outcomes
 
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
 
@@ -124,6 +125,7 @@ ma = box.MAParams(
 
 if run:
     st.session_state.pop("past_cases", None)
+    st.session_state.pop("past_sig", None)
     listing, all_hist, meta = load_kr() if region == "kr" else load_us()
     markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
     listing = listing[listing["Market"].isin(markets)]
@@ -333,132 +335,147 @@ st.plotly_chart(fig, use_container_width=True)
 st.caption("※ 시세는 네이버 금융 일봉 기준입니다. 박스권은 과거 가격 패턴이며 향후 방향을 알려주지 않습니다. "
            "이 도구는 정보 제공용이며 투자 권유가 아닙니다.")
 
-# ───────────────────────── 과거 유사 사례 ─────────────────────────
+# ───────────────────────── 과거 비슷한 박스의 돌파 결과 ─────────────────────────
 st.divider()
-st.subheader("과거 유사 사례 수집")
-st.caption("확정 종가가 탐지 당시 상단을 초과하거나 하단 미만이면 종료합니다. "
-           "경계와 같은 종가·장중 꼬리는 종료가 아닙니다. 탐지 후 상·하단은 고정합니다.")
-st.info("현재 수집된 약 250개 일봉과 현재 종목 목록만 사용하는 탐색용 표본입니다. "
-        "과거 상장폐지 종목이 빠지는 편향이 있고, 거래정지·누락일은 관측 봉수에서 빠집니다. "
-        "주식분할·과거 시세 수정은 따로 보정하지 않습니다. 전체 시장의 예측 확률이나 수익률로 해석할 수 없습니다.")
+st.subheader("과거 비슷한 박스는 어디로 뚫었나")
+
+c_b, c_h = st.columns(2)
+band = c_b.select_slider("돌파 확인폭 b", options=[2.0, 2.5, 3.0], value=3.0, format_func=lambda v: f"{v:g}%",
+                         help="상방: 종가 ≥ 상단×(1+b). 하방: 종가 ≤ 하단×(1−b). 그 사이는 박스 유지로 봅니다.")
+horizon = c_h.radio("기간", outcomes.HORIZONS, index=1, horizontal=True, format_func=lambda h: f"{h}일 안에")
 
 listing_s = st.session_state.get("listing", pd.DataFrame())
-labels = ({str(r.Key): f"{r.Name} ({r.Code})" for r in listing_s.itertuples()}
-          if not listing_s.empty else {})
-collect_kwargs = dict(p=p_used, ma=ma_used, min_value=st.session_state["min_value"], value_div=R["value_div"],
-                      provisional_date=S["prov_date"], listing=listing_s, calendar=S["calendar"])
+labels = ({str(r.Key): f"{r.Name} ({r.Code})" for r in listing_s.itertuples()} if not listing_s.empty else {})
+auto_keys = list(dict.fromkeys([row["Key"]] + view["Key"].head(20).tolist()))[:21]
+pool_key = f"pool_{S['fetched_at']}_{st.session_state['region']}_{pos}"
+pool = st.session_state.get(pool_key) or auto_keys
+if row["Key"] not in pool:
+    pool = [row["Key"]] + list(pool)
 
-# 현재 선택 종목에 같은 수집 규칙을 적용 → 지금 이어지는 사례(관찰 중)의 '탐지 당시' 특징으로 비교
-own_cases = history_cases.collect_cases({row["Key"]: histories[row["Key"]]}, **collect_kwargs, errors=[])
-_own = histories[row["Key"]]
-if S["prov_date"] is not None:  # 수집은 잠정 봉을 항상 빼므로, 확정된 마지막 봉 기준으로 맞춘다
-    _own = _own[_own.index.date != S["prov_date"]]
-target = (history_cases.current_case(own_cases, row["Key"], _own.index[-1].date())
-          if len(_own) else None)
-st.markdown(f"**{row['종목명']}의 현재 사례 (수집 규칙 기준)**")
-if target is None:
-    st.warning("수집 규칙(최초 탐지일의 경계 고정)으로 보면 이 종목에는 지금 이어지는 사례가 없습니다. "
-               "위 스캐너의 박스는 '오늘 기준 가장 긴 구간'이라, 최초 탐지 때의 좁은 경계를 이미 벗어났을 수 있습니다. "
-               "그래서 이 종목은 유사 사례 비교 대상에서 제외합니다.")
-else:
-    pf_ = R["pfmt"]
-    st.dataframe(pd.DataFrame([{
-        "탐지일": str(target["탐지일"]),
-        "탐지 당시 기간": f"{int(target['탐지시박스기간'])}봉",
-        "탐지 당시 폭": f"{target['박스폭(%)']:.1f}%",
-        "탐지 당시 위치": f"{target['탐지시위치(%)']:.0f}%",
-        "탐지 후 관찰": f"{int(target['탐지후관찰봉수'])}봉 (종료 안 됨)",
-    }]), hide_index=True, use_container_width=True)
-    st.caption(f"고정 경계: 상단 {pf_.format(target['상단'])} / 하단 {pf_.format(target['하단'])}. "
-               "스캐너의 현재 박스(오늘 기준 최장 구간)와 값이 다를 수 있으며, 유사 사례 비교에는 이 탐지 당시 값을 씁니다.")
-
-with st.form("history_collection"):
-    chosen = st.multiselect("수집 대상 (한 번에 최대 20종목)", sorted(histories),
-                            default=[row["Key"]], format_func=lambda k: labels.get(k, k))
-    st.caption("현재 검색의 박스·거래대금·이평선 조건으로 과거 날짜마다 탐지합니다. "
-               "한 박스가 끝나기 전 재등록하지 않고, 종료 다음 봉부터 새 구간을 탐지합니다.")
-    collect = st.form_submit_button("과거 사례 수집하기")
-if collect:
-    if not chosen or len(chosen) > 20:
-        st.warning("1~20종목을 선택하세요.")
-    else:
-        bar = st.progress(0.0, text="과거 날짜별 탐지 중…")
+# 수집(자동). 같은 종목·조건·돌파폭이면 다시 계산하지 않는다.
+sig = (tuple(sorted(pool)), band, S["fetched_at"], repr(p_used), repr(ma_used), st.session_state["min_value"])
+if st.session_state.get("past_sig") != sig:
+    with st.spinner(f"과거 사례 수집 중… ({len(pool)}종목)"):
         errs: list = []
-        cases = history_cases.collect_cases(
-            {k: histories[k] for k in chosen}, **collect_kwargs, errors=errs,
-            collected_at=dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M KST"),
-            progress=lambda i, n: bar.progress(i / n, text=f"사례 수집 {i}/{n}종목"),
-        )
-        bar.empty()
-        st.session_state["past_cases"] = cases
+        st.session_state["past_cases"] = history_cases.collect_cases(
+            {k: histories[k] for k in pool if k in histories}, p_used, ma_used,
+            st.session_state["min_value"], R["value_div"], S["prov_date"],
+            listing=listing_s, calendar=S["calendar"], errors=errs, rule="v2", band_pct=band,
+            collected_at=dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M KST"))
         st.session_state["past_errors"] = errs
-        st.session_state["past_chosen"] = chosen
+        st.session_state["past_sig"] = sig
+cases = st.session_state["past_cases"]
 
-if "past_cases" in st.session_state:
-    cases = st.session_state["past_cases"]
+_own = histories[row["Key"]]
+if S["prov_date"] is not None:  # 수집은 잠정 봉을 항상 빼므로 확정된 마지막 봉 기준으로 맞춘다
+    _own = _own[_own.index.date != S["prov_date"]]
+target = history_cases.current_case(cases, row["Key"], _own.index[-1].date()) if len(_own) else None
+
+tol_days = st.session_state.get("tol_days", 10)
+tol_width = st.session_state.get("tol_width", 3.0)
+tol_pos = st.session_state.get("tol_pos", 25.0)
+base = None
+
+if target is None:
+    st.info(f"**{row['종목명']}**은 돌파폭 {band:g}% 기준으로 지금 진행 중인 박스가 없어 계산하지 않았습니다 "
+            "(최초 탐지 때의 경계에서 이미 돌파한 상태).")
+else:
+    age = int(target["탐지후관찰봉수"])
+    others = cases[cases["사례ID"] != target["사례ID"]]
+    others = others[pd.to_datetime(others["탐지일"]) < pd.Timestamp(S["ref_date"])]
+    similar = history_cases.similar_cases(others, target, tol_days, tol_width, tol_pos, S["ref_date"])
+    sim_cls = outcomes.classify(similar, age)
+    s_sim = outcomes.summarize(sim_cls, horizon)
+    if s_sim["estimable"]:
+        base, basis_label = sim_cls, "비슷한 사례"
+    else:
+        base, basis_label = outcomes.classify(others, age), f"수집한 {len(pool)}종목 전체 사례"
+    summary = outcomes.summarize(base, horizon)
+
+    if summary["estimable"]:
+        pc, ci, cnt = summary["pct"], summary["ci"], summary["counts"]
+        m1, m2, m3 = st.columns(3)
+        m1.metric(f"▲ 위로 돌파 ({cnt['상방']}건)", f"{pc['상방']:.0f}%")
+        m2.metric(f"▼ 아래로 돌파 ({cnt['하방']}건)", f"{pc['하방']:.0f}%")
+        m3.metric(f"■ 못 뚫음 ({cnt['미돌파']}건)", f"{pc['미돌파']:.0f}%")
+        note = ("" if basis_label == "비슷한 사례"
+                else f" · 비슷한 사례는 {s_sim['n']}건({s_sim['stocks']}종목)뿐이라 전체 사례로 계산")
+        st.caption(f"과거 {basis_label} **{summary['n']}건**({summary['stocks']}종목) 중 {horizon}일 안의 결과 · "
+                   f"95% 범위 위로 {ci['상방'][0]:.0f}–{ci['상방'][1]:.0f}%, "
+                   f"아래로 {ci['하방'][0]:.0f}–{ci['하방'][1]:.0f}%{note}")
+    else:
+        st.metric("결과", "추정 불가")
+        st.caption(f"과거 사례가 {summary['n']}건({summary['stocks']}종목)뿐이라 비율을 내지 않습니다 "
+                   f"(기준: {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 이상).")
+
+    def _cell(s, lab):
+        if not s["estimable"]:
+            return "–"
+        lo, hi = s["ci"][lab]
+        return f"{s['pct'][lab]:.0f}% ({lo:.0f}–{hi:.0f})"
+
+    tbl = []
+    for h in outcomes.HORIZONS:
+        s = outcomes.summarize(base, h)
+        tbl.append({"기간": f"{h}일 안에", "위로": _cell(s, "상방"), "아래로": _cell(s, "하방"),
+                    "못 뚫음": _cell(s, "미돌파"), "사례(종목)": f"{s['n']}({s['stocks']})",
+                    "데이터 부족": s["counts"]["데이터부족"]})
+    st.dataframe(pd.DataFrame(tbl), hide_index=True, use_container_width=True)
+    st.caption(f"괄호는 95% 범위. 과거에 관측된 비율이며 {row['종목명']}의 앞날을 맞히도록 검증된 확률은 아닙니다. "
+               f"기준점: 탐지 후 {age}봉째까지 돌파하지 않은 시점부터.")
+
+# ── 세부 정보(접어 둠) ──
+with st.expander("계산 방법과 한계"):
+    st.markdown(f"""
+- **돌파**: 탐지일의 상단(U)·하단(L)을 고정하고, 확정 종가가 U×(1+{band:g}%) 이상이면 위로, L×(1−{band:g}%) 이하이면 아래로 돌파. 먼저 일어난 쪽만 셉니다. 장중 꼬리는 무시합니다.
+- **기준점**: 이 종목이 탐지 후 e봉째까지 돌파하지 않았다면, 과거 사례도 e봉째까지 돌파하지 않은 것만 골라 그 시점부터 기간을 셉니다.
+- **비율**: 분모는 기간 안에 결과를 판정할 수 있는 사례(위로+아래로+못 뚫음). 관측이 기간보다 짧고 돌파도 없던 사례는 '데이터 부족'으로 따로 셉니다.
+- **95% 범위**: 종목 단위로 다시 뽑아 계산했습니다. 같은 날 시장 전체가 함께 움직인 영향은 다 반영하지 못합니다.
+- **추정 불가**: 판정 가능 사례 {outcomes.MIN_N}건 미만이거나 종목 {outcomes.MIN_STOCKS}개 미만.
+- **비슷한 사례**: 탐지 당시 기간 ±{tol_days}봉, 박스 폭 ±{tol_width:g}%p, 위치 ±{tol_pos:g}%p. 부족하면 수집한 종목의 전체 사례로 계산하고 그렇게 표시합니다.
+- **데이터**: 약 250개 일봉(1년)과 현재 상장 종목만 사용해 상장폐지 종목이 빠집니다. 분할 반영 수정주가, 배당 미반영. 관측 봉수는 거래정지일을 세지 않습니다.
+- 규칙 버전: `{history_cases.rule_version('v2', band)}`
+""")
+
+with st.expander("비슷한 사례 기준 조정"):
+    a, b, c = st.columns(3)
+    a.number_input("탐지 당시 기간 차이 ±(봉)", 0, 120, 10, key="tol_days")
+    b.number_input("박스 폭 차이 ±(%p)", 0.0, 30.0, 3.0, key="tol_width")
+    c.number_input("박스 내 위치 차이 ±(%p)", 0.0, 100.0, 25.0, key="tol_pos")
+    st.caption("사용자 비교 조건이며 예측 성능이 검증된 기준이 아닙니다.")
+
+with st.expander(f"수집 대상 {len(pool)}종목 (표 상위 20개 자동 선택)"):
+    st.multiselect("수집 대상", sorted(histories), default=auto_keys, key=pool_key,
+                   format_func=lambda k: labels.get(k, k), max_selections=21, label_visibility="collapsed")
     errs = st.session_state.get("past_errors", [])
     if errs:
-        st.warning(f"시세 오류로 {len(errs)}종목을 건너뛰었습니다: "
-                   + ", ".join(f"{labels.get(k, k)} ({msg.split(': ', 1)[-1]})" for k, msg in errs))
-    # 종목별 실제 데이터 범위
+        st.warning(f"시세 오류로 {len(errs)}종목 제외: " + ", ".join(labels.get(k, k) for k, _ in errs))
     rng = []
-    for k in st.session_state.get("past_chosen", []):
+    for k in pool:
         h = histories.get(k)
         if h is None or not len(h):
             continue
         h = h[h.index.date != S["prov_date"]] if S["prov_date"] else h
         rng.append({"종목": labels.get(k, k), "시세 시작일": h.index[0].date(), "시세 마지막일": h.index[-1].date(),
-                    "보유 봉수": len(h), "누락일(달력 대비)": box.missing_days(h, S["calendar"], h.index[0])})
-    with st.expander("수집 대상 종목의 실제 데이터 범위"):
-        st.dataframe(pd.DataFrame(rng), hide_index=True, use_container_width=True)
-        st.caption("누락일은 분석 종목 절반 이상이 거래한 날짜 기준으로, 이 종목에 시세가 없는 날(거래정지 등)입니다.")
+                    "보유 봉수": len(h), "누락일": box.missing_days(h, S["calendar"], h.index[0])})
+    st.dataframe(pd.DataFrame(rng), hide_index=True, use_container_width=True)
 
+with st.expander(f"사례 목록과 CSV ({len(cases)}건)"):
     if cases.empty:
-        st.info("선택한 기간·종목·조건에서 탐지된 과거 사례가 없습니다.")
+        st.info("수집된 사례가 없습니다.")
     else:
-        done = cases[cases["종료여부"]]
-        open_ = cases[~cases["종료여부"]]
-        st.write(f"수집 {len(cases)}건 · 종료 {len(done)}건 · 관찰 중 {len(open_)}건")
-        st.caption("탐지일에 박스가 가장 좁게 잡히는 경우가 많아, 고정 경계를 벗어나는 종료가 1~5봉 안에 자주 나옵니다. "
-                   "관측 봉수는 이 종목에 시세가 있는 날만 센 값이라 실제 시장 거래일 수(달력거래일수)와 다를 수 있습니다. "
-                   "이 기능은 서버에 영구 누적되지 않으니 CSV로 보관하세요.")
         hide = ["검색조건JSON", "Key"]
-        tab_done, tab_open = st.tabs([f"종료 사례 {len(done)}건", f"관찰 중 {len(open_)}건"])
-        with tab_done:
-            st.caption("‘탐지→종료 봉수’는 탐지 다음 봉부터 첫 종가 이탈일까지 센 값입니다.")
-            st.dataframe(done.drop(columns=hide).rename(columns={"탐지후관찰봉수": "탐지→종료 봉수"}),
-                         hide_index=True, use_container_width=True)
-        with tab_open:
-            st.caption("‘탐지 후 관찰 봉수’는 마지막 관측일까지 센 값으로, 종료까지 남은 기간이 아닙니다. "
-                       "관찰 중 사례를 뺀 평균으로 잔여 기간을 계산하지 않습니다.")
-            st.dataframe(open_.drop(columns=hide + ["종료일", "종료종가"])
-                         .rename(columns={"탐지후관찰봉수": "탐지 후 관찰 봉수(미종료)"}),
-                         hide_index=True, use_container_width=True)
+        done, open_ = cases[cases["종료여부"]], cases[~cases["종료여부"]]
+        t1, t2 = st.tabs([f"돌파 {len(done)}건", f"관찰 중 {len(open_)}건"])
+        t1.dataframe(done.drop(columns=hide).rename(columns={"탐지후관찰봉수": "탐지→돌파 봉수",
+                                                              "종료일": "돌파일", "종료종가": "돌파종가"}),
+                     hide_index=True, use_container_width=True)
+        t2.caption("관찰 봉수는 마지막 관측일까지 센 값이며 남은 기간이 아닙니다.")
+        t2.dataframe(open_.drop(columns=hide + ["종료일", "종료종가"])
+                     .rename(columns={"탐지후관찰봉수": "탐지 후 관찰 봉수"}), hide_index=True, use_container_width=True)
+        export = cases if base is None else cases.merge(
+            base[["사례ID"] + [f"결과{h}" for h in outcomes.HORIZONS]], on="사례ID", how="left")
         d1, d2 = st.columns(2)
-        d1.download_button("전체 사례 CSV (원본)", history_cases.to_csv_bytes(cases),
-                           "박스권_과거사례.csv", "text/csv", help="검색 조건 JSON·규칙 버전 포함")
-        d2.download_button("전체 사례 CSV (엑셀용)", history_cases.to_csv_bytes(cases, excel=True),
-                           "박스권_과거사례_엑셀용.csv", "text/csv",
-                           help="엑셀에서 열어도 종목코드 앞자리 0이 사라지지 않도록 저장합니다.")
-
-        st.markdown(f"**{row['종목명']}과 비슷한 과거 탐지 사례**")
-        if target is None:
-            st.info("현재 이어지는 사례가 없어 비교 기준이 없습니다(위 안내 참고).")
-        else:
-            a, b, c = st.columns(3)
-            tol_days = a.number_input("탐지 당시 기간 차이 ±(봉)", 0, 120, 10)
-            tol_width = b.number_input("박스 폭 차이 ±(%p)", 0.0, 30.0, 3.0)
-            tol_pos = c.number_input("박스 내 위치 차이 ±(%p)", 0.0, 100.0, 25.0)
-            similar = history_cases.similar_cases(cases, target, tol_days, tol_width, tol_pos, S["ref_date"])
-            st.caption("허용차는 사용자가 정하는 비교 조건이며, 예측 성능이 검증된 모델이 아닙니다. "
-                       f"기준: 탐지 당시 기간 {int(target['탐지시박스기간'])}봉 · 폭 {target['박스폭(%)']:.1f}% · "
-                       f"위치 {target['탐지시위치(%)']:.0f}%. 분석일({S['ref_date']}) 이전에 탐지된 사례만 표시하며, "
-                       "같은 종목의 과거 사례도 포함하고 현재 사례 자신은 뺍니다.")
-            st.write(f"유사 사례 {len(similar)}건 (종료 {int(similar['종료여부'].sum()) if len(similar) else 0}건 · "
-                     f"관찰 중 {int((~similar['종료여부']).sum()) if len(similar) else 0}건)")
-            st.dataframe(similar.drop(columns=hide), hide_index=True, use_container_width=True)
-            e1, e2 = st.columns(2)
-            e1.download_button("유사 사례 CSV (원본)", history_cases.to_csv_bytes(similar),
-                               "박스권_유사사례.csv", "text/csv")
-            e2.download_button("유사 사례 CSV (엑셀용)", history_cases.to_csv_bytes(similar, excel=True),
-                               "박스권_유사사례_엑셀용.csv", "text/csv")
+        d1.download_button("CSV (원본)", history_cases.to_csv_bytes(export), "박스권_과거사례.csv", "text/csv")
+        d2.download_button("CSV (엑셀용)", history_cases.to_csv_bytes(export, excel=True),
+                           "박스권_과거사례_엑셀용.csv", "text/csv", help="엑셀에서도 종목코드 앞자리 0 유지")

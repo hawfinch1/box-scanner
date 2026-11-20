@@ -7,19 +7,43 @@ import pandas as pd
 
 import box
 
-RULE_VERSION = "fixed-close-v1"
+RULE_VERSION = "fixed-close-v1"  # 종가가 상단 초과/하단 미만이면 종료
+RULE_V2 = "fixed-close-b-v2"      # 종가가 상단×(1+b%) 이상/하단×(1−b%) 이하이면 돌파
 CODE_COLUMNS = ["종목코드", "Key"]
+_EPS = 1e-12  # 부동소수점 오차로 기준가와 같은 종가가 갈리지 않도록 하는 상대 허용치
+
+
+def rule_version(rule="v1", band_pct=None):
+    """사례에 기록할 규칙 버전 문자열. v2는 돌파폭을 함께 기록해 b가 다른 사례와 섞이지 않게 한다."""
+    if rule == "v1":
+        return RULE_VERSION
+    if rule == "v2":
+        if band_pct is None or band_pct <= 0:
+            raise ValueError("v2 규칙에는 0보다 큰 돌파폭(band_pct)이 필요합니다.")
+        return f"{RULE_V2}(b={band_pct:g}%)"
+    raise ValueError(f"알 수 없는 규칙: {rule}")
+
+
+def _thresholds(upper, lower, rule, band_pct):
+    """(상방 기준가, 하방 기준가, 상방 판정 함수, 하방 판정 함수)"""
+    if rule == "v1":
+        return upper, lower, (lambda c: c > upper), (lambda c: c < lower)
+    up = upper * (1 + band_pct / 100)
+    dn = lower * (1 - band_pct / 100)
+    return up, dn, (lambda c: c >= up * (1 - _EPS)), (lambda c: c <= dn * (1 + _EPS))
 
 
 def collect_cases(histories, p, ma, min_value=0.0, value_div=1e8,
                   provisional_date=None, progress=None, listing=None,
-                  calendar=None, collected_at=None, errors=None):
+                  calendar=None, collected_at=None, errors=None, rule="v1", band_pct=None):
     """종목별 과거 사례를 비중첩 방식으로 수집한다.
 
     listing: Key·Code·Name·Market 열이 있는 종목 목록(있으면 종목코드·종목명·시장 기록)
     calendar: 거래일 달력(있으면 탐지 후 누락일 수 기록)
     errors: 리스트를 넘기면 시세 오류 종목을 건너뛰고 (Key, 사유)를 담는다. 없으면 예외를 낸다.
+    rule: "v1"(경계 초과/미만 종료) 또는 "v2"(돌파폭 band_pct% 적용, 기준가 이상/이하면 돌파)
     """
+    version = rule_version(rule, band_pct)
     rows = []
     settings = json.dumps({"box": asdict(p), "ma": asdict(ma),
                            "min_value": min_value, "value_div": value_div},
@@ -53,12 +77,14 @@ def collect_cases(histories, p, ma, min_value=0.0, value_div=1e8,
                 i += 1
                 continue
             future = df.iloc[i + 1:]
-            crossed = (future.Close > r["upper"]) | (future.Close < r["lower"])
+            up_px, dn_px, is_up, is_dn = _thresholds(r["upper"], r["lower"], rule, band_pct)
+            fc = future.Close
+            crossed = is_up(fc) | is_dn(fc)
             ended = bool(crossed.any())
             remaining = int(crossed.to_numpy().argmax()) + 1 if ended else len(future)
             end_i = i + remaining
             end_close = float(df.Close.iloc[end_i])
-            direction = ("상방" if end_close > r["upper"] else "하방") if ended else "관찰 중"
+            direction = ("상방" if is_up(end_close) else "하방") if ended else "관찰 중"
             obs_end = df.index[end_i]
             if cal is not None:
                 window = cal[(cal > df.index[i]) & (cal <= obs_end)]
@@ -66,12 +92,16 @@ def collect_cases(histories, p, ma, min_value=0.0, value_div=1e8,
                 missing = int(len(window.difference(df.index)))
             else:
                 cal_days = missing = None
-            identity = f"{key}|{df.index[i].isoformat()}|{settings}"
+            # v1 사례ID는 이전과 같게 유지(재현성), v2는 규칙 버전(돌파폭 포함)을 ID에 넣는다
+            identity = (f"{key}|{df.index[i].isoformat()}|{settings}" if rule == "v1"
+                        else f"{key}|{df.index[i].isoformat()}|{settings}|{version}")
             rows.append({
                 "사례ID": hashlib.sha256(identity.encode()).hexdigest()[:20],
                 "Key": key, "종목코드": code, "종목명": name, "시장": market,
                 "탐지일": df.index[i].date(), "박스시작일": r["start"],
                 "탐지시박스기간": r["days"], "상단": r["upper"], "하단": r["lower"],
+                "돌파폭(%)": band_pct if rule == "v2" else 0.0,
+                "상방기준가": up_px, "하방기준가": dn_px,
                 "박스폭(%)": r["width_pct"], "탐지시위치(%)": r["position_pct"],
                 "일변동성(%)": r["daily_vol"], "상단터치": r["upper_touches"],
                 "하단터치": r["lower_touches"], "평균거래대금": r["avg_value"] / value_div,
@@ -84,7 +114,7 @@ def collect_cases(histories, p, ma, min_value=0.0, value_div=1e8,
                 "종료종가": end_close if ended else None,
                 "시세시작일": data_start, "시세마지막일": data_end,
                 "수집시각": collected_at,
-                "규칙버전": RULE_VERSION, "검색조건JSON": settings,
+                "규칙버전": version, "검색조건JSON": settings,
             })
             if not ended:
                 break
