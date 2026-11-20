@@ -140,7 +140,9 @@ if run:
                     "prov_date": meta["prov_date"], "drop_prov": drop_prov},
         )
 
-if "result" not in st.session_state:
+# 이전 버전에서 남은 세션(일부 키만 있음)은 결과가 없는 것으로 취급해 새로 스캔하게 한다
+_NEEDED = ("result", "histories", "region", "ma", "params", "min_value", "listing", "status")
+if not all(k in st.session_state for k in _NEEDED):
     st.info("왼쪽에서 조건을 정하고 **스캔하기**를 누르세요. 첫 스캔은 전 종목 시세를 받느라 30초~1분 걸리고, "
             "이후 30분 동안은 조건을 바꿔도 바로 결과가 나옵니다.")
     with st.expander("박스권은 어떻게 판별하나요?", expanded=True):
