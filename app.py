@@ -64,6 +64,9 @@ def load_us():
 st.title("📦 박스권 스캐너")
 st.caption("최근 일정 기간 좁은 가격 범위 안에서 오르내린 **횡보 후보** 종목을 찾아줍니다. "
            "국내(코스피·코스닥)와 미국(나스닥)을 지원합니다.")
+# 휴대폰에서는 사이드바가 접혀 있어 스캔 버튼이 안 보이므로 본문에도 버튼을 둔다
+main_run = st.button("🔍 스캔하기", type="primary", key="main_run",
+                     help="왼쪽(휴대폰은 왼쪽 위 › 버튼) 검색 조건으로 스캔합니다.")
 
 # ───────────────────────── 사이드바: 기본 조건 → 스캔 버튼 → 세부 조건 ─────────────────────────
 with st.sidebar:
@@ -123,6 +126,7 @@ ma = box.MAParams(
     ref_period=int(ref_opt.removesuffix("일선")) if ref_opt != "사용 안 함" else None, ref_side=ref_side,
 )
 
+run = run or main_run
 if run:
     st.session_state.pop("past_cases", None)
     st.session_state.pop("past_sig", None)
@@ -145,7 +149,8 @@ if run:
 # 이전 버전에서 남은 세션(일부 키만 있음)은 결과가 없는 것으로 취급해 새로 스캔하게 한다
 _NEEDED = ("result", "histories", "region", "ma", "params", "min_value", "listing", "status")
 if not all(k in st.session_state for k in _NEEDED):
-    st.info("왼쪽에서 조건을 정하고 **스캔하기**를 누르세요. 첫 스캔은 전 종목 시세를 받느라 30초~1분 걸리고, "
+    st.info("**스캔하기**를 누르면 기본 조건으로 바로 찾습니다. 조건은 왼쪽(휴대폰은 왼쪽 위 › 버튼)에서 바꿀 수 있어요. "
+            "첫 스캔은 전 종목 시세를 받느라 30초~1분 걸리고, "
             "이후 30분 동안은 조건을 바꿔도 바로 결과가 나옵니다.")
     with st.expander("박스권은 어떻게 판별하나요?", expanded=True):
         st.markdown("""
