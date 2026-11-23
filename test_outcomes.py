@@ -66,5 +66,61 @@ class SummarizeTests(unittest.TestCase):
         self.assertFalse(s["estimable"])
 
 
+class BreakoutTimingTests(unittest.TestCase):
+    def test_remaining_days_and_horizon_boundaries(self):
+        c = cases([
+            ("early", True, "상방", 3),
+            ("at_age", True, "상방", 5),
+            ("up", True, "상방", 6),
+            ("down", True, "하방", 10),
+            ("late", True, "상방", 11),
+            ("open", False, "관찰 중", 15),
+            ("short", False, "관찰 중", 7),
+            ("too_short", False, "관찰 중", 4),
+        ])
+        original = c.copy(deep=True)
+        t = outcomes.breakout_timing(c, age=5, h=5, min_n=1, min_stocks=1)
+        self.assertEqual(t["n"], 2)
+        self.assertEqual(t["mean"], 3.0)  # 1 and 5 extra bars, not 6 and 10
+        self.assertEqual(t["median"], 3.0)
+        self.assertEqual(t["counts"], {"상방": 1, "하방": 1, "미돌파": 2, "데이터부족": 1})
+        self.assertEqual(t["by_direction"]["상방"]["mean"], 1.0)
+        self.assertEqual(t["by_direction"]["하방"]["mean"], 5.0)
+        pd.testing.assert_frame_equal(c, original)
+
+    def test_no_breakout_is_not_zero_days(self):
+        t = outcomes.breakout_timing(cases([("A", False, "관찰 중", 20)]), 0, 10)
+        self.assertEqual(t["n"], 0)
+        self.assertIsNone(t["mean"])
+        self.assertIsNone(t["median"])
+        self.assertFalse(t["estimable"])
+        self.assertEqual(t["counts"]["미돌파"], 1)
+
+    def test_empty(self):
+        t = outcomes.breakout_timing(cases([]), 0, 20)
+        self.assertEqual(t["n"], 0)
+        self.assertIsNone(t["mean"])
+        self.assertEqual(sum(t["counts"].values()), 0)
+
+    def test_threshold_applies_to_completed_and_each_direction(self):
+        c = cases([(f"S{i % 12}", True, "상방" if i % 2 else "하방", 3) for i in range(36)])
+        t = outcomes.breakout_timing(c, 1, 5)
+        self.assertTrue(t["estimable"])
+        self.assertEqual(t["mean"], 2.0)
+        self.assertFalse(t["by_direction"]["상방"]["estimable"])
+        self.assertFalse(t["by_direction"]["하방"]["estimable"])
+
+    def test_many_open_cases_do_not_make_mean_estimable(self):
+        c = cases([(f"S{i}", False, "관찰 중", 20) for i in range(40)] + [("B", True, "상방", 2)])
+        t = outcomes.breakout_timing(c, 0, 10)
+        self.assertEqual(t["n"], 1)
+        self.assertFalse(t["estimable"])
+
+    def test_invalid_period(self):
+        for age, h in [(-1, 5), (0, 0)]:
+            with self.assertRaises(ValueError):
+                outcomes.breakout_timing(cases([]), age, h)
+
+
 if __name__ == "__main__":
     unittest.main()

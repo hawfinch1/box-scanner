@@ -9,8 +9,10 @@ import streamlit as st
 import box
 import history_cases
 import outcomes
+import mobile_ui
 
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
+mobile_ui.setup_mobile_ui()
 
 KST = ZoneInfo("Asia/Seoul")  # 배포 서버는 UTC라 한국 시간으로 표시
 HISTORY_DAYS = 250  # 한 번에 받아 두는 일봉 수(약 1년, 120일선까지 계산 가능)
@@ -66,7 +68,7 @@ st.caption("최근 일정 기간 좁은 가격 범위 안에서 오르내린 **�
            "국내(코스피·코스닥)와 미국(나스닥)을 지원합니다.")
 # 휴대폰에서는 사이드바가 접혀 있어 스캔 버튼이 안 보이므로 본문에도 버튼을 둔다
 main_run = st.button("🔍 스캔하기", type="primary", key="main_run",
-                     help="왼쪽(휴대폰은 왼쪽 위 › 버튼) 검색 조건으로 스캔합니다.")
+                     help="‘설정 변경’에서 지정한 검색 조건으로 스캔합니다.")
 
 # ───────────────────────── 사이드바: 기본 조건 → 스캔 버튼 → 세부 조건 ─────────────────────────
 with st.sidebar:
@@ -149,7 +151,7 @@ if run:
 # 이전 버전에서 남은 세션(일부 키만 있음)은 결과가 없는 것으로 취급해 새로 스캔하게 한다
 _NEEDED = ("result", "histories", "region", "ma", "params", "min_value", "listing", "status")
 if not all(k in st.session_state for k in _NEEDED):
-    st.info("**스캔하기**를 누르면 기본 조건으로 바로 찾습니다. 조건은 왼쪽(휴대폰은 왼쪽 위 › 버튼)에서 바꿀 수 있어요. "
+    st.info("**스캔하기**를 누르면 기본 조건으로 바로 찾습니다. 조건은 왼쪽 위 **설정 변경** 버튼에서 바꿀 수 있어요. "
             "첫 스캔은 전 종목 시세를 받느라 30초~1분 걸리고, "
             "이후 30분 동안은 조건을 바꿔도 바로 결과가 나옵니다.")
     with st.expander("박스권은 어떻게 판별하나요?", expanded=True):
@@ -335,7 +337,10 @@ fig.update_layout(
     xaxis_rangeslider_visible=False, height=560, margin=dict(l=10, r=10, t=50, b=10),
     legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
 )
-st.plotly_chart(fig, use_container_width=True)
+mobile_ui.render_chart(
+    fig, f"{int(row['박스기간(일)'])}거래일 박스 · 폭 {row['박스폭(%)']:.1f}% (노란 영역)",
+    key=f"price_chart_{row['Key']}",
+)
 
 st.caption("※ 시세는 네이버 금융 일봉 기준입니다. 박스권은 과거 가격 패턴이며 향후 방향을 알려주지 않습니다. "
            "이 도구는 정보 제공용이며 투자 권유가 아닙니다.")
@@ -413,6 +418,33 @@ else:
         st.caption(f"과거 사례가 {summary['n']}건({summary['stocks']}종목)뿐이라 비율을 내지 않습니다 "
                    f"(기준: {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 이상).")
 
+    st.subheader("돌파까지 얼마나 걸렸나")
+    timing = outcomes.breakout_timing(base, age, horizon)
+
+    def _days_value(stats):
+        if not stats["n"]:
+            return "돌파 사례 없음"
+        return f"{stats['mean']:.1f}거래일" if stats["estimable"] else "추정 불가"
+
+    t_all, t_up, t_down = st.columns(3)
+    for column, label, stats in (
+        (t_all, "돌파 평균 (양방향)", timing),
+        (t_up, "위로 돌파 평균", timing["by_direction"]["상방"]),
+        (t_down, "아래로 돌파 평균", timing["by_direction"]["하방"]),
+    ):
+        column.metric(label, _days_value(stats))
+        column.caption(f"돌파 {stats['n']}건 · {stats['stocks']}종목")
+    median_note = (f" · 중앙값 {timing['median']:g}거래일" if timing["estimable"] else "")
+    st.caption(
+        f"과거 {basis_label} 중 같은 경과 시점부터 **{horizon}거래일 안에 실제 돌파한 사례만**의 추가 소요 기간{median_note}. "
+        f"해당 기간 미돌파 {timing['counts']['미돌파']}건·데이터 부족 {timing['counts']['데이터부족']}건은 평균에서 제외함. "
+        "짧은 기간에 돌파한 사례만의 평균이므로 현재 종목의 예상 돌파일이나 모든 박스의 평균 대기 시간이 아님."
+    )
+    st.caption(
+        f"단위는 달력 날짜가 아닌 관측된 일봉 수임(주말·휴장·거래정지 누락일 제외). "
+        f"평균은 방향별로도 돌파 {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 이상일 때 표시함."
+    )
+
     def _cell(s, lab):
         if not s["estimable"]:
             return "–"
@@ -422,9 +454,12 @@ else:
     tbl = []
     for h in outcomes.HORIZONS:
         s = outcomes.summarize(base, h)
+        t = outcomes.breakout_timing(base, age, h)
         tbl.append({"기간": f"{h}일 안에", "위로": _cell(s, "상방"), "아래로": _cell(s, "하방"),
                     "못 뚫음": _cell(s, "미돌파"), "사례(종목)": f"{s['n']}({s['stocks']})",
-                    "데이터 부족": s["counts"]["데이터부족"]})
+                    "데이터 부족": s["counts"]["데이터부족"],
+                    "돌파 평균(추가 거래일)": f"{t['mean']:.1f}" if t["estimable"] else "–",
+                    "평균 대상(종목)": f"{t['n']}({t['stocks']})"})
     st.dataframe(pd.DataFrame(tbl), hide_index=True, use_container_width=True)
     st.caption(f"괄호는 95% 범위. 과거에 관측된 비율이며 {row['종목명']}의 앞날을 맞히도록 검증된 확률은 아닙니다. "
                f"기준점: 탐지 후 {age}봉째까지 돌파하지 않은 시점부터.")
@@ -437,6 +472,7 @@ with st.expander("계산 방법과 한계"):
 - **비율**: 분모는 기간 안에 결과를 판정할 수 있는 사례(위로+아래로+못 뚫음). 관측이 기간보다 짧고 돌파도 없던 사례는 '데이터 부족'으로 따로 셉니다.
 - **95% 범위**: 종목 단위로 다시 뽑아 계산했습니다. 같은 날 시장 전체가 함께 움직인 영향은 다 반영하지 못합니다.
 - **추정 불가**: 판정 가능 사례 {outcomes.MIN_N}건 미만이거나 종목 {outcomes.MIN_STOCKS}개 미만.
+- **돌파 소요 기간**: 같은 경과 시점부터 선택한 기간 안에 실제 돌파한 사례의 추가 관측 봉수 평균·중앙값. 미돌파·데이터 부족은 평균에 넣지 않으며 제외 건수를 표시합니다. 전체·방향별 각각 돌파 {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 미만이면 평균도 추정 불가입니다. 기간 밖에서 돌파한 사례도 해당 기간의 평균에는 넣지 않습니다.
 - **비슷한 사례**: 탐지 당시 기간 ±{tol_days}봉, 박스 폭 ±{tol_width:g}%p, 위치 ±{tol_pos:g}%p. 부족하면 수집한 종목의 전체 사례로 계산하고 그렇게 표시합니다.
 - **데이터**: 약 250개 일봉(1년)과 현재 상장 종목만 사용해 상장폐지 종목이 빠집니다. 분할 반영 수정주가, 배당 미반영. 관측 봉수는 거래정지일을 세지 않습니다.
 - 규칙 버전: `{history_cases.rule_version('v2', band)}`

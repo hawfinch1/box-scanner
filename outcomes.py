@@ -60,3 +60,38 @@ def summarize(classified: pd.DataFrame, h: int, n_boot: int = 2000, seed: int = 
         "h": h, "n": n, "stocks": stocks, "counts": counts, "pct": pct, "ci": ci,
         "estimable": n >= min_n and stocks >= min_stocks,
     }
+
+
+def breakout_timing(cases: pd.DataFrame, age: int, h: int,
+                    min_n: int = MIN_N, min_stocks: int = MIN_STOCKS) -> dict:
+    """같은 경과 시점부터 h봉 내 실제 돌파한 사례의 추가 소요 봉수.
+
+    미돌파·데이터 부족을 0일이나 h일로 바꾸지 않는다. 이 평균은 h봉 내 돌파한
+    사례에 조건부이며, 모든 박스의 평균 대기 시간이나 현재 종목의 예측값이 아니다.
+    방향별 표본 기준도 각각 적용한다. 입력은 변경하지 않는다.
+    """
+    if age < 0 or h <= 0:
+        raise ValueError("age는 0 이상, h는 양수여야 합니다.")
+    classified = classify(cases, age, horizons=(h,))
+    col = f"결과{h}"
+    counts = {label: int((classified[col] == label).sum()) for label in LABELS}
+    completed = classified[classified[col].isin(("상방", "하방"))]
+
+    def stats(frame):
+        n = len(frame)
+        stocks = int(frame["Key"].nunique()) if n else 0
+        days = frame["탐지후관찰봉수"].astype(int) - age if n else None
+        return {
+            "n": n, "stocks": stocks,
+            "mean": float(days.mean()) if n else None,
+            "median": float(days.median()) if n else None,
+            "estimable": n >= min_n and stocks >= min_stocks,
+        }
+
+    return {
+        "age": age, "h": h, "counts": counts,
+        **stats(completed),
+        "by_direction": {
+            label: stats(completed[completed[col] == label]) for label in ("상방", "하방")
+        },
+    }
