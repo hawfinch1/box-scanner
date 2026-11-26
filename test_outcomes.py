@@ -40,6 +40,20 @@ class ClassifyTests(unittest.TestCase):
 
 
 class SummarizeTests(unittest.TestCase):
+    def test_cumulative_periods_keep_nonbreakouts_in_denominator(self):
+        c = cases([("A", True, "상방", 7), ("B", True, "하방", 12),
+                   ("C", False, "관찰 중", 25), ("D", False, "관찰 중", 6)])
+        classified = outcomes.classify(c)
+        result = [outcomes.summarize(classified, h, n_boot=20) for h in (5, 10, 20)]
+        self.assertEqual([r["n"] for r in result], [4, 3, 3])
+        self.assertEqual([r["counts"]["미돌파"] for r in result], [4, 2, 1])
+        self.assertEqual([r["counts"]["데이터부족"] for r in result], [0, 1, 1])
+        self.assertEqual(result[2]["counts"]["상방"], 1)
+        self.assertEqual(result[2]["counts"]["하방"], 1)
+        for r in result:
+            self.assertAlmostEqual(sum(r["pct"].values()), 100)
+            self.assertFalse(r["estimable"])
+
     def test_denominator_excludes_insufficient_and_sums_to_100(self):
         c = cases([("A", True, "상방", 2), ("B", True, "하방", 2), ("C", False, "관찰 중", 30),
                    ("D", False, "관찰 중", 1)])

@@ -67,7 +67,9 @@ st.title("📦 박스권 스캐너")
 st.caption("최근 일정 기간 좁은 가격 범위 안에서 오르내린 **횡보 후보** 종목을 찾아줍니다. "
            "국내(코스피·코스닥)와 미국(나스닥)을 지원합니다.")
 # 휴대폰에서는 사이드바가 접혀 있어 스캔 버튼이 안 보이므로 본문에도 버튼을 둔다
-main_run = st.button("🔍 스캔하기", type="primary", key="main_run",
+scan_col, breakout_col = st.columns([1, 2])
+recent_run = breakout_col.button("방금 박스 돌파한 종목", key="recent_run")
+main_run = scan_col.button("🔍 스캔하기", type="primary", key="main_run",
                      help="‘설정 변경’에서 지정한 검색 조건으로 스캔합니다.")
 
 # ───────────────────────── 사이드바: 기본 조건 → 스캔 버튼 → 세부 조건 ─────────────────────────
@@ -83,6 +85,7 @@ with st.sidebar:
                          help="5거래일 = 약 1주. 이 기간 이상 박스권을 유지한 종목만 표시합니다.")
     max_width = st.slider("박스 폭 상한 (%)", 3.0, 30.0, 10.0, 0.5,
                           help="(상단-하단)/하단. 작을수록 더 좁고 단단한 박스입니다.")
+    recent_band = st.select_slider("최근 돌파 검색 확인폭 (%)", options=[i / 2 for i in range(2, 11)], value=3.0)
     run = st.button("🔍 스캔하기", type="primary", use_container_width=True)
     st.caption("처음이라면 기본값 그대로 스캔해 보세요. 아래는 세부 조건입니다.")
 
@@ -130,6 +133,7 @@ ma = box.MAParams(
 
 run = run or main_run
 if run:
+    st.session_state.pop("recent_view", None)
     st.session_state.pop("past_cases", None)
     st.session_state.pop("past_sig", None)
     listing, all_hist, meta = load_kr() if region == "kr" else load_us()
@@ -147,6 +151,65 @@ if run:
                     "failed": len(keys) - len(raw), "fetched_at": meta["fetched_at"],
                     "prov_date": meta["prov_date"], "drop_prov": drop_prov},
         )
+
+if recent_run:
+    listing, market_hist, meta = load_kr() if region == "kr" else load_us()
+    markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
+    listing = listing[listing["Market"].isin(markets)]
+    raw = {k: market_hist[k] for k in listing["Key"] if k in market_hist}
+    confirmed, info = box.prepare(raw, meta["prov_date"], True, 1)
+    calendar = info["calendar"]
+    rows = []
+    if len(calendar) >= 2:
+        from recent_breakouts import latest_breakouts
+        with st.spinner("직전 거래일 박스와 마지막 확정 종가 비교 중…"):
+            rows = latest_breakouts(confirmed, listing, params, ma, min_value,
+                                              R["value_div"], calendar[-2], calendar[-1], recent_band)
+    code_to_key = listing.set_index("Code")["Key"]
+    st.session_state["recent_prices"] = {
+        r["종목코드"]: confirmed[code_to_key.at[r["종목코드"]]] for r in rows
+    }
+    st.session_state["recent_view"] = (rows, info["ref_date"], recent_band, R["label"])
+
+if "recent_view" in st.session_state:
+    records, date, used_band, market = st.session_state["recent_view"]
+    st.subheader("방금 박스 돌파한 종목")
+    st.caption(f"{market} · 마지막 검색 기준일 {date} · 직전 거래일 박스 대비 확정 종가 {used_band:g}% 이상 이탈")
+    for direction in ("상방", "하방"):
+        found = [r for r in records if r["방향"] == direction]
+        st.markdown(f"**{direction} 돌파 · {len(found)}종목**")
+        if found:
+            event = st.dataframe(pd.DataFrame(found), hide_index=True, on_select="rerun",
+                                 selection_mode="single-row", key=f"recent_table_{market}_{date}_{used_band}_{direction}")
+            selected = event.selection.rows
+            item = found[selected[0]] if selected and selected[0] < len(found) else found[0]
+            prices = st.session_state.get("recent_prices", {}).get(item["종목코드"])
+            if prices is None:
+                st.info("최근 돌파 검색 버튼을 다시 눌러 차트 시세를 불러오세요.")
+            else:
+                st.caption("표에서 종목을 선택하면 아래 차트가 바뀝니다. 음영은 돌파 직전 박스, 점선은 돌파 확인 가격입니다.")
+                size = int(item["직전 박스기간"])
+                bars = prices.tail(max(60, size * 3 + 1))
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
+                fig.add_trace(go.Candlestick(x=bars.index, open=bars.Open, high=bars.High, low=bars.Low,
+                                             close=bars.Close, name="일봉"), row=1, col=1)
+                for n in ma_periods:
+                    fig.add_trace(go.Scatter(x=bars.index, y=prices.Close.rolling(n).mean().reindex(bars.index),
+                                             name=f"{n}일선", line=dict(color=MA_COLORS[n])), row=1, col=1)
+                fig.add_trace(go.Bar(x=bars.index, y=bars.Volume, name="거래량"), row=2, col=1)
+                fig.add_shape(type="rect", x0=prices.index[-size-1], x1=prices.index[-2],
+                              y0=item["하단"], y1=item["상단"], fillcolor="rgba(255,193,7,0.15)",
+                              line=dict(color="orange", width=1), row=1, col=1)
+                threshold = item["상단"]*(1+used_band/100) if direction=="상방" else item["하단"]*(1-used_band/100)
+                fig.add_hline(y=threshold, line_dash="dot", row=1, col=1)
+                fig.add_annotation(x=bars.index[-1], y=item["확정 종가"], text=f"{direction} 돌파",
+                                   ax=-40, ay=-25, showarrow=True, row=1, col=1)
+                fig.update_layout(height=520, xaxis_rangeslider_visible=False)
+                mobile_ui.render_chart(fig, f"{item['종목명']} ({item['종목코드']}) · {direction} 돌파",
+                                       key=f"recent_chart_{direction}_{item['종목코드']}")
+        else:
+            st.caption("해당 종목이 없습니다.")
+    st.stop()
 
 # 이전 버전에서 남은 세션(일부 키만 있음)은 결과가 없는 것으로 취급해 새로 스캔하게 한다
 _NEEDED = ("result", "histories", "region", "ma", "params", "min_value", "listing", "status")
@@ -208,6 +271,57 @@ with st.expander(f"데이터 상태 · 수집 {S['fetched_at']} (KST) · 제외 
 """)
 
 st.caption("⚠️ 아래 결과는 *조건에 맞게 횡보한 종목*일 뿐, 상승·하락 신호나 투자 추천이 아닙니다.")
+
+# 확정 종가 기준 관찰 목록은 오늘의 횡보 검색 결과가 비어도 조회 가능하다.
+with st.expander("고정 박스 관찰 · 상단 접근 / 하단 반등"):
+    import box_watch
+    watch_band = st.radio("관찰 목록 돌파 확인폭", [2.0, 2.5, 3.0], index=2,
+                          format_func=lambda v: f"{v:g}%", horizontal=True)
+    st.caption("조회하면 직전 확정 거래일의 박스를 먼저 등록하고 없으면 최신 봉을 확인합니다. "
+               "같은 세션·검색 조건에서 다시 조회하면 등록한 경계를 유지합니다. "
+               "상·하단 접근은 박스 높이의 바깥쪽 20% 기준입니다.")
+    watch_sig = (st.session_state["region"], tuple(sorted(st.session_state["listing"]["Market"].unique())),
+                 repr(p_used), repr(ma_used), st.session_state["min_value"], watch_band)
+    st.caption("골든크로스는 5·20일선 모두가 60일선 위에 처음 모인 날입니다. 이평선 방향은 5봉 전 대비, Supertrend는 ATR 10·배수 3, 밴드는 20봉·표준편차 2배 기준입니다.")
+    if st.button("후보 목록 조회"):
+        old = st.session_state.get("watch_book", {})
+        previous = old.get("active", {}) if old.get("sig") == watch_sig else {}
+        with st.spinner("확정 종가와 고정 경계 비교 중…"):
+            active, highs, lows = box_watch.candidates(
+                previous, histories, st.session_state["listing"], p_used, ma_used,
+                st.session_state["min_value"], R["value_div"], S["ref_date"], watch_band, S["prov_date"])
+        from indicators import indicators
+        gold = []
+        names = st.session_state["listing"].set_index("Key")
+        lookup = {}
+        for key, (detected, top, bottom) in active.items():
+            if top is None or key not in histories:
+                continue
+            daily = histories[key]
+            if S["prov_date"] is not None:
+                daily = daily[daily.index.date != S["prov_date"]]
+            if daily.empty:
+                continue
+            signal = indicators(daily)
+            code = names.at[key, "Code"]
+            lookup[code] = signal
+            price = daily.Close.iloc[-1]
+            if bottom <= price <= top and signal["골든크로스"] == "오늘 완성":
+                gold.append({"종목명": names.at[key, "Name"], "종목코드": code,
+                             "신호일": daily.index[-1].date(), "종가": price, "상단": top,
+                             "상단까지(%)": (top/price-1)*100, **signal})
+        for record in highs + lows:
+            record.update(lookup.get(record["종목코드"], {}))
+        st.session_state["watch_book"] = dict(sig=watch_sig, active=active, highs=highs, lows=lows, gold=gold,
+                                              fetched=S["fetched_at"])
+    saved = st.session_state.get("watch_book", {})
+    if saved.get("sig") == watch_sig and saved.get("fetched") == S["fetched_at"]:
+        for label, records in (("상단 후보", saved["highs"]), ("하단 후보", saved["lows"]), ("박스 안 골든크로스 · 오늘 완성", saved.get("gold", []))):
+            st.markdown(f"**{label} · {len(records)}종목**")
+            if records:
+                st.dataframe(pd.DataFrame(records), hide_index=True)
+            else:
+                st.caption("조건을 만족하는 종목이 없습니다.")
 
 if res.empty:
     st.warning("조건에 맞는 종목이 없습니다. 박스 폭을 넓히거나 최소 기간·터치 횟수를 낮추거나, 이평선 조건을 풀어 보세요.")
@@ -314,8 +428,28 @@ with c_right:
 # 차트
 full = histories[row["Key"]]
 show_n = max(60, int(row["박스기간(일)"]) * 3)  # 박스가 잘 보이도록 최근 구간만
-mas = {n: full["Close"].rolling(n).mean().tail(show_n) for n in ma_used.periods}
 df = full.tail(show_n)
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def earlier_chart_prices(region_key, symbol, count):
+    fetch = box.fetch_krx if region_key == "kr" else box.fetch_us
+    return fetch(symbol, count)
+
+prices = full["Close"]
+longest = max(ma_used.periods, default=1)
+if len(full) - len(df) < longest - 1:
+    extra = earlier_chart_prices(st.session_state["region"], row["Key"], show_n + longest - 1)
+    if extra is not None and full.index[0] in extra.index:
+        # 같은 수정주가 기준인지 확인한 뒤 스캔 시작일 이전 가격만 사용한다.
+        if extra.at[full.index[0], "Close"] == prices.iloc[0]:
+            prices = pd.concat([extra.loc[extra.index < full.index[0], "Close"], prices])
+mas = {n: prices.rolling(n).mean().reindex(df.index) for n in ma_used.periods}
+if mas and pd.isna(mas[longest].iloc[0]):
+    st.caption(f"앞부분은 이전 종가가 부족해 이동평균선을 계산 가능한 날짜부터 표시합니다.")
+    valid = mas[longest].first_valid_index()
+    if valid is not None and st.checkbox("모든 이평선이 있는 기간만 보기", key="chart_complete_ma"):
+        df = df.loc[valid:]
+        mas = {n: line.loc[valid:] for n, line in mas.items()}
 
 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.03)
 fig.add_trace(go.Candlestick(
@@ -325,7 +459,7 @@ fig.add_trace(go.Candlestick(
 for n, s in mas.items():
     fig.add_trace(go.Scatter(x=s.index, y=s, mode="lines", name=f"{n}일선",
                              line=dict(width=1.4, color=MA_COLORS.get(n))), row=1, col=1)
-fig.add_shape(type="rect", x0=pd.Timestamp(row["시작일"]), x1=df.index[-1], y0=row["하단"], y1=row["상단"],
+fig.add_shape(type="rect", x0=max(df.index[0], pd.Timestamp(row["시작일"])), x1=df.index[-1], y0=row["하단"], y1=row["상단"],
               fillcolor="rgba(255,193,7,0.15)", line=dict(color="rgba(255,160,0,0.8)", width=1.5), row=1, col=1)
 vol_colors = ["#e5484d" if c >= o else "#3e63dd" for o, c in zip(df["Open"], df["Close"])]
 fig.add_trace(go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors, name="거래량", showlegend=False),
@@ -394,6 +528,25 @@ else:
     others = cases[cases["사례ID"] != target["사례ID"]]
     others = others[pd.to_datetime(others["탐지일"]) < pd.Timestamp(S["ref_date"])]
     similar = history_cases.similar_cases(others, target, tol_days, tol_width, tol_pos, S["ref_date"])
+    with st.expander("전략별 과거 유사 사례 비교", expanded=True):
+        from strategy_cases import strategy_cases
+        st.caption(f"현재 박스의 탐지 당시 기간·폭·가격 위치가 비슷했던 사례만 비교합니다. "
+                   f"각 전략의 첫 신호 다음 {horizon}개 확정 봉을 관찰합니다. 현재 박스 경과 일수로 맞춘 통계는 아닙니다.")
+        evidence = strategy_cases(similar, histories, S["ref_date"], S["prov_date"], horizon)
+        for strategy, success, description in (
+            ("상방 돌파", "상단 유지", "상방 돌파 후 종가가 원래 상단 아래로 한 번도 내려오지 않은 경우"),
+            ("하단 회복", "중앙 도달", "전일 하단 이하에서 하단 위·중앙 아래로 회복한 뒤 하방 돌파보다 먼저 종가가 중앙에 닿은 경우"),
+        ):
+            sample = evidence[evidence["전략"] == strategy]
+            valid = sample[sample["결과"] != "자료 부족"]
+            count = int((valid["결과"] == success).sum())
+            enough = len(valid) >= outcomes.MIN_N and valid["코드"].nunique() >= outcomes.MIN_STOCKS
+            rate = f"{100*count/len(valid):.1f}%" if enough else "추정 불가"
+            st.markdown(f"**{strategy} · {success} {rate}**")
+            st.caption(f"{description}. 해당 {count}건 / 판정 가능 {len(valid)}건 "
+                       f"({valid['코드'].nunique()}종목), 자료 부족 {len(sample)-len(valid)}건.")
+        if not evidence.empty:
+            st.dataframe(evidence, hide_index=True)
     sim_cls = outcomes.classify(similar, age)
     s_sim = outcomes.summarize(sim_cls, horizon)
     if s_sim["estimable"]:
@@ -418,49 +571,27 @@ else:
         st.caption(f"과거 사례가 {summary['n']}건({summary['stocks']}종목)뿐이라 비율을 내지 않습니다 "
                    f"(기준: {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 이상).")
 
-    st.subheader("돌파까지 얼마나 걸렸나")
-    timing = outcomes.breakout_timing(base, age, horizon)
-
-    def _days_value(stats):
-        if not stats["n"]:
-            return "돌파 사례 없음"
-        return f"{stats['mean']:.1f}거래일" if stats["estimable"] else "추정 불가"
-
-    t_all, t_up, t_down = st.columns(3)
-    for column, label, stats in (
-        (t_all, "돌파 평균 (양방향)", timing),
-        (t_up, "위로 돌파 평균", timing["by_direction"]["상방"]),
-        (t_down, "아래로 돌파 평균", timing["by_direction"]["하방"]),
-    ):
-        column.metric(label, _days_value(stats))
-        column.caption(f"돌파 {stats['n']}건 · {stats['stocks']}종목")
-    median_note = (f" · 중앙값 {timing['median']:g}거래일" if timing["estimable"] else "")
-    st.caption(
-        f"과거 {basis_label} 중 같은 경과 시점부터 **{horizon}거래일 안에 실제 돌파한 사례만**의 추가 소요 기간{median_note}. "
-        f"해당 기간 미돌파 {timing['counts']['미돌파']}건·데이터 부족 {timing['counts']['데이터부족']}건은 평균에서 제외함. "
-        "짧은 기간에 돌파한 사례만의 평균이므로 현재 종목의 예상 돌파일이나 모든 박스의 평균 대기 시간이 아님."
-    )
-    st.caption(
-        f"단위는 달력 날짜가 아닌 관측된 일봉 수임(주말·휴장·거래정지 누락일 제외). "
-        f"평균은 방향별로도 돌파 {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 이상일 때 표시함."
-    )
+    st.subheader("기간별 누적 돌파 비율")
+    st.caption("같은 경과 시점부터 각 기간 안에 처음 돌파한 비율입니다. "
+               "미돌파도 분모에 포함하고 데이터 부족은 따로 표시합니다. "
+               "현재 종목의 예상 돌파일이나 평균 대기 시간을 뜻하지 않습니다.")
 
     def _cell(s, lab):
         if not s["estimable"]:
-            return "–"
+            return "추정 불가"
         lo, hi = s["ci"][lab]
         return f"{s['pct'][lab]:.0f}% ({lo:.0f}–{hi:.0f})"
 
     tbl = []
     for h in outcomes.HORIZONS:
         s = outcomes.summarize(base, h)
-        t = outcomes.breakout_timing(base, age, h)
-        tbl.append({"기간": f"{h}일 안에", "위로": _cell(s, "상방"), "아래로": _cell(s, "하방"),
+        tbl.append({"추가 관측 기간": f"{h}봉 안에", "위로": _cell(s, "상방"), "아래로": _cell(s, "하방"),
                     "못 뚫음": _cell(s, "미돌파"), "사례(종목)": f"{s['n']}({s['stocks']})",
-                    "데이터 부족": s["counts"]["데이터부족"],
-                    "돌파 평균(추가 거래일)": f"{t['mean']:.1f}" if t["estimable"] else "–",
-                    "평균 대상(종목)": f"{t['n']}({t['stocks']})"})
+                    "데이터 부족": s["counts"]["데이터부족"]})
     st.dataframe(pd.DataFrame(tbl), hide_index=True, use_container_width=True)
+    st.caption("각 행의 분모는 해당 기간의 판정 가능 사례입니다. 관찰 부족으로 기간별 분모가 달라져 "
+               "비율이 반드시 단조롭게 증가하지는 않습니다. 동일한 수집 대상 집합을 사용하며, "
+               "관측 봉수는 주말·휴장·거래정지 누락일을 포함하지 않습니다.")
     st.caption(f"괄호는 95% 범위. 과거에 관측된 비율이며 {row['종목명']}의 앞날을 맞히도록 검증된 확률은 아닙니다. "
                f"기준점: 탐지 후 {age}봉째까지 돌파하지 않은 시점부터.")
 
@@ -472,7 +603,6 @@ with st.expander("계산 방법과 한계"):
 - **비율**: 분모는 기간 안에 결과를 판정할 수 있는 사례(위로+아래로+못 뚫음). 관측이 기간보다 짧고 돌파도 없던 사례는 '데이터 부족'으로 따로 셉니다.
 - **95% 범위**: 종목 단위로 다시 뽑아 계산했습니다. 같은 날 시장 전체가 함께 움직인 영향은 다 반영하지 못합니다.
 - **추정 불가**: 판정 가능 사례 {outcomes.MIN_N}건 미만이거나 종목 {outcomes.MIN_STOCKS}개 미만.
-- **돌파 소요 기간**: 같은 경과 시점부터 선택한 기간 안에 실제 돌파한 사례의 추가 관측 봉수 평균·중앙값. 미돌파·데이터 부족은 평균에 넣지 않으며 제외 건수를 표시합니다. 전체·방향별 각각 돌파 {outcomes.MIN_N}건·{outcomes.MIN_STOCKS}종목 미만이면 평균도 추정 불가입니다. 기간 밖에서 돌파한 사례도 해당 기간의 평균에는 넣지 않습니다.
 - **비슷한 사례**: 탐지 당시 기간 ±{tol_days}봉, 박스 폭 ±{tol_width:g}%p, 위치 ±{tol_pos:g}%p. 부족하면 수집한 종목의 전체 사례로 계산하고 그렇게 표시합니다.
 - **데이터**: 약 250개 일봉(1년)과 현재 상장 종목만 사용해 상장폐지 종목이 빠집니다. 분할 반영 수정주가, 배당 미반영. 관측 봉수는 거래정지일을 세지 않습니다.
 - 규칙 버전: `{history_cases.rule_version('v2', band)}`
