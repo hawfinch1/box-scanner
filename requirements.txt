@@ -6,3 +6,4 @@ plotly>=5.20
 finance-datareader>=0.9.90
 tzdata
 exchange-calendars==4.13.3
+openpyxl>=3.1.5

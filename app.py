@@ -10,6 +10,7 @@ import box
 import history_cases
 import outcomes
 import mobile_ui
+import related_etfs
 
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
 mobile_ui.setup_mobile_ui()
@@ -245,6 +246,7 @@ if "recent_view" in st.session_state:
                 fig.update_layout(height=520, xaxis_rangeslider_visible=False)
                 mobile_ui.render_chart(fig, f"{item['종목명']} ({item['종목코드']}) · {direction} 돌파",
                                        key=f"recent_chart_{direction}_{item['종목코드']}")
+            related_etfs.render(item["종목코드"], "kr" if market == REGIONS["kr"]["label"] else "us", direction)
         else:
             st.caption("해당 종목이 없습니다.")
     st.stop()
@@ -438,6 +440,7 @@ if not rows:
     st.caption("표에서 종목을 클릭하면 아래 선정 이유와 차트가 바뀝니다.")
 
 st.subheader(f"{row['종목명']} ({row['종목코드']})")
+related_etfs.render(row["종목코드"], st.session_state["region"], "scan")
 
 # 선정 이유: 조건별 실제 값과 기준을 나란히
 pfmt = R["pfmt"]
