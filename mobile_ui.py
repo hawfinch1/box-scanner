@@ -77,7 +77,7 @@ def setup_mobile_ui():
 
 
 @st.cache_resource
-def _chart_component():
+def _chart_component(version):
     # Ship the installed Plotly bundle, without an external CDN dependency.
     return components.component(
         "box_scanner_touch_chart",
@@ -108,7 +108,7 @@ def render_chart(fig, title: str, *, key: str):
         {"name": trace.name, "color": trace.line.color}
         for trace in fig.data if trace.type == "scatter"
     ]
-    _chart_component()(
+    _chart_component(CHART_BOUNDS_VERSION)(
         key=key,
         data={"figure": json.loads(fig.to_json()), "title": title, "legend": legend},
     )
