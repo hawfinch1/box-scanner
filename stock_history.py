@@ -6,10 +6,11 @@ import streamlit as st
 
 import box
 import history_cases
+from touch_markers import add_touch_markers
 import mobile_ui
 import related_etfs
 
-GLOBAL_SEARCH_VERSION = 2
+GLOBAL_SEARCH_VERSION = 3
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -130,6 +131,10 @@ def render(region, markets, params, ma, min_value, divisor, band):
             fig.add_shape(type="rect", x0=segment[0], x1=segment[-1], y0=record["하단"],
                           y1=record["상단"], fillcolor="orange", opacity=0.2, line_width=1,
                           row=1, col=1)
+    if cases is not None and not cases.empty:
+        boxes = [(bars.loc[pd.Timestamp(case["박스시작일"]):pd.Timestamp(case["탐지일"])],
+                  case["상단"], case["하단"]) for _, case in cases.iterrows()]
+        add_touch_markers(fig, boxes, params, shown.index)
     fig.update_layout(height=620, xaxis_rangeslider_visible=False)
     mobile_ui.render_chart(fig, f"{listing.at[key, 'Name']} · 과거 박스",
                            key=f"history_chart_{region}_{key}", currency="KRW" if region == "kr" else "USD")
@@ -138,6 +143,7 @@ def render(region, markets, params, ma, min_value, divisor, band):
     if cases is not None:
         total = sum(r["표시 기간 내 박스 안 종가(봉)"] for r in records)
         st.write(f"현재 조건으로 탐지한 {len(records)}개 구간 · 관측 {len(shown)}봉 중 고정 경계 안 종가 {total}봉 ({total/len(shown):.1%})")
+        st.caption("▼ 상단 · ▲ 하단 터치. 과거 박스의 표시는 최초 탐지에 사용한 형성 구간 기준입니다. 연속 접촉은 첫 봉에만 표시합니다.")
         st.caption(f"최대 1,250봉에서 겹치지 않는 박스를 탐지합니다. 음영은 형성 시작부터 돌파 전까지이며, 비율에는 고정 상·하단 안에서 마감한 날만 포함합니다. 종가 돌파 확인폭 {band:g}%.")
         st.caption(f"탐지 조건 · 최소 {params.min_days}봉 / 최대 {params.max_days}봉 · 박스 폭 {params.max_width_pct:g}% 이하 · 상하단 접촉 각각 {params.min_touches}회 · 가격 기준 {'종가' if params.use_close else '고가·저가'} · 최소 평균 거래대금 {min_value:g}{'억원' if region == 'kr' else '백만 USD'}")
         st.info("표시된 비율은 현재 조건과 최초 탐지 경계로 집계한 값입니다. 폭이 더 넓은 횡보나 돌파 후 새 박스를 형성하는 기간은 추가로 잡힐 수 있습니다. 왼쪽 검색 조건을 바꾸면 과거 이력도 다시 계산합니다.")

@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v2 as components
 from plotly.offline import get_plotlyjs
 
-CHART_BOUNDS_VERSION = 4
+CHART_BOUNDS_VERSION = 5
 _ASSETS = Path(__file__).parent / "ui"
 
 
@@ -112,8 +112,8 @@ def render_chart(fig, title: str, *, key: str, currency: str | None = None):
             fig.update_xaxes(minallowed=first, maxallowed=last, range=[first, last], autorange=False)
     fig.update_yaxes(minallowed=0, rangemode="nonnegative")
     legend = [
-        {"name": trace.name, "color": trace.line.color}
-        for trace in fig.data if trace.type == "scatter"
+        {"name": trace.name, "color": trace.line.color, "symbol": trace.marker.symbol}
+        for trace in fig.data if trace.type == "scatter" and trace.showlegend is not False
     ]
     _chart_component(CHART_BOUNDS_VERSION)(
         key=key,

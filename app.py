@@ -9,10 +9,11 @@ import streamlit as st
 import box
 import history_cases
 import outcomes
+from touch_markers import add_touch_markers
 import mobile_ui
 
 # Hot updates can retain the previous helper module in Streamlit's process.
-if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 4:
+if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 5:
     import importlib
     importlib.reload(mobile_ui)
 import related_etfs
@@ -181,7 +182,7 @@ if st.session_state.get("direct_search"):
         st.button("검색 결과로 돌아가기",
                   on_click=return_to_results, key="history_back")
     import stock_history
-    if getattr(stock_history, "GLOBAL_SEARCH_VERSION", None) != 2:
+    if getattr(stock_history, "GLOBAL_SEARCH_VERSION", None) != 3:
         import importlib
         importlib.reload(stock_history)
     markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
@@ -280,6 +281,8 @@ if "recent_view" in st.session_state:
                 fig.add_shape(type="rect", x0=prices.index[-size-1], x1=prices.index[-2],
                               y0=item["하단"], y1=item["상단"], fillcolor="rgba(255,193,7,0.15)",
                               line=dict(color="orange", width=1), row=1, col=1)
+                add_touch_markers(fig, [(prices.iloc[-size-1:-1], item["상단"], item["하단"])],
+                                  params, bars.index)
                 threshold = item["상단"]*(1+used_band/100) if direction=="상방" else item["하단"]*(1-used_band/100)
                 fig.add_hline(y=threshold, line_dash="dot", row=1, col=1)
                 fig.add_annotation(x=bars.index[-1], y=item["확정 종가"], text=f"{direction} 돌파",
@@ -572,6 +575,8 @@ fig.add_trace(go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors, name="
               row=2, col=1)
 gaps = pd.date_range(df.index[0], df.index[-1]).difference(df.index)  # 주말·휴장일 공백 제거
 fig.update_xaxes(rangebreaks=[dict(values=gaps)])
+add_touch_markers(fig, [(full.loc[pd.Timestamp(row["시작일"]):], row["상단"], row["하단"])],
+                  p_used, df.index)
 fig.update_layout(
     title=f"{int(row['박스기간(일)'])}거래일 박스 · 폭 {row['박스폭(%)']:.1f}% (노란 영역)",
     xaxis_rangeslider_visible=False, height=560, margin=dict(l=10, r=10, t=50, b=10),

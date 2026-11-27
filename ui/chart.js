@@ -10,6 +10,12 @@ export default function({parentElement, data}) {
         const label = document.createElement('span');
         const swatch = document.createElement('i');
         swatch.style.backgroundColor = item.color;
+        if (item.symbol === 'triangle-down' || item.symbol === 'triangle-up') {
+            swatch.style.width = '12px';
+            swatch.style.height = '10px';
+            swatch.style.clipPath = item.symbol === 'triangle-down'
+                ? 'polygon(0 0,100% 0,50% 100%)' : 'polygon(50% 0,100% 100%,0 100%)';
+        }
         label.append(swatch, document.createTextNode(item.name));
         legend.append(label);
     }
