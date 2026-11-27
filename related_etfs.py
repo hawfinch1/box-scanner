@@ -26,6 +26,8 @@ def render(code, region, key):
     if not st.checkbox("관련 ETF 보기", key=f"etfs_{key}_{region}_{code}"):
         return
     st.caption("조회 범위 · SPY 운용사 편입표, 국내 과거 공시 일부, 테슬라 일간 추종 상품 2개")
+    st.info("국내 편입 ETF 목록은 일부 과거 공시만 연결한 상태입니다. 최신 전체 편입 목록의 수집은 준비 중입니다.")
+    st.link_button("ETF CHECK에서 편입 종목 검색", "https://www.etfcheck.co.kr/mobile/searchPdf")
     rows = []
 
     def add(market, fund, relation, date, source):

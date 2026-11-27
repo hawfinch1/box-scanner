@@ -1,12 +1,15 @@
 """Mobile presentation only; scanner parameters and calculations stay in app.py."""
 
 import json
+
+import pandas as pd
 from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v2 as components
 from plotly.offline import get_plotlyjs
 
+CHART_BOUNDS_VERSION = 1
 _ASSETS = Path(__file__).parent / "ui"
 
 
@@ -88,6 +91,19 @@ def _chart_component():
 def render_chart(fig, title: str, *, key: str):
     fig.update_layout(title=None, showlegend=False, dragmode="pan",
                       margin=dict(l=48, r=14, t=12, b=35), autosize=True)
+    dates = pd.DatetimeIndex([date for trace in fig.data
+                              if trace.type == "candlestick" for date in trace.x])
+    if len(dates):
+        first, last = dates.min().isoformat(), dates.max().isoformat()
+        # Native axis bounds cover buttons, mouse dragging, touch and reset.
+        if first != last:
+            fig.update_xaxes(minallowed=first, maxallowed=last, range=[first, last], autorange=False)
+        else:
+            # One candle needs a nonzero window.
+            first = (dates.min() - pd.Timedelta(hours=12)).isoformat()
+            last = (dates.max() + pd.Timedelta(hours=12)).isoformat()
+            fig.update_xaxes(minallowed=first, maxallowed=last, range=[first, last], autorange=False)
+    fig.update_yaxes(minallowed=0, rangemode="nonnegative")
     legend = [
         {"name": trace.name, "color": trace.line.color}
         for trace in fig.data if trace.type == "scatter"

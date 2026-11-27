@@ -10,6 +10,11 @@ import box
 import history_cases
 import outcomes
 import mobile_ui
+
+# Hot updates can retain the previous helper module in Streamlit's process.
+if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 1:
+    import importlib
+    importlib.reload(mobile_ui)
 import related_etfs
 
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
@@ -76,7 +81,8 @@ st.title("📦 박스권 스캐너")
 st.caption("최근 일정 기간 좁은 가격 범위 안에서 오르내린 **횡보 후보** 종목을 찾아줍니다. "
            "국내(코스피·코스닥)와 미국(나스닥)을 지원합니다.")
 # 휴대폰에서는 사이드바가 접혀 있어 스캔 버튼이 안 보이므로 본문에도 버튼을 둔다
-scan_col, breakout_col = st.columns([1, 2])
+scan_col, breakout_col, direct_col = st.columns(3)
+direct_run = direct_col.button("개별주 검색 · 과거 박스")
 recent_run = breakout_col.button("방금 박스 돌파한 종목", key="recent_run")
 main_run = scan_col.button("🔍 스캔하기", type="primary", key="main_run",
                      help="‘설정 변경’에서 지정한 검색 조건으로 스캔합니다.")
@@ -153,6 +159,16 @@ def load_market(region):
     st.warning("국내 종가 기준일을 확인할 수 없습니다. 잠시 후 다시 검색하세요.")
     st.stop()
 
+
+if direct_run:
+    st.session_state["direct_search"] = True
+if run or main_run or recent_run:
+    st.session_state.pop("direct_search", None)
+if st.session_state.get("direct_search"):
+    import stock_history
+    markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
+    stock_history.render(region, markets, params, ma, min_value, R["value_div"], recent_band)
+    st.stop()
 
 run = run or main_run
 if run:
