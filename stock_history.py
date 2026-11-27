@@ -9,6 +9,8 @@ import history_cases
 import mobile_ui
 import related_etfs
 
+GLOBAL_SEARCH_VERSION = 1
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def symbols(region):
@@ -56,16 +58,29 @@ def visible_boxes(cases, bars, shown):
 
 def render(region, markets, params, ma, min_value, divisor, band):
     st.subheader("개별주 검색 · 과거 박스")
-    try:
-        listing = symbols(region)
-    except Exception:
-        st.error("종목 목록을 받지 못했습니다. 다시 조회해 주세요.")
+    frames = []
+    for source, label in (("kr", "국내"), ("us", "미국·나스닥")):
+        try:
+            frame = symbols(source).copy()
+            frame["Region"] = source
+            frame["RegionLabel"] = label
+            frames.append(frame)
+        except Exception:
+            st.warning(f"{label} 종목 목록을 받지 못했습니다. 다시 조회해 주세요.")
+    if not frames:
         return
-    listing = listing[listing.Market.isin(markets)].set_index("Key")
-    key = st.selectbox("종목명 또는 코드 검색", listing.index, index=None,
-                       format_func=lambda k: f"{listing.at[k,'Name']} ({listing.at[k,'Code']})")
+    listing = pd.concat(frames, ignore_index=True).drop_duplicates("Key").set_index("Key")
+    st.caption("국내·미국 나스닥 통합 검색 · 애플 또는 AAPL, 테슬라 또는 TSLA로 검색 가능")
+    key = st.selectbox("종목명 또는 코드 검색", listing.index, index=None, key="history_stock",
+                       format_func=lambda k: f"{listing.at[k,'Name']} ({listing.at[k,'Code']}) · {listing.at[k,'RegionLabel']}")
     if key is None:
         return
+    selected_region = listing.at[key, "Region"]
+    if selected_region != region:
+        min_value = 10.0 if selected_region == "kr" else 5.0
+    region = selected_region
+    divisor = 1e8 if region == "kr" else 1e6
+    currency = "원" if region == "kr" else "USD"
     count = st.radio("표시할 최근 거래일", [120, 250, 500, 1250], index=2, horizontal=True,
                      format_func=lambda n: f"{n:,}일", key="history_count")
     chart_periods = st.multiselect("차트 이동평균선", [5, 10, 20, 60, 120, 240],
@@ -94,7 +109,7 @@ def render(region, markets, params, ma, min_value, divisor, band):
         if shown.empty:
             st.info("선택한 날짜에 일봉이 없습니다. 거래일을 포함해 선택해 주세요.")
             return
-    st.caption(f"{listing.at[key, 'Name']} ({listing.at[key, 'Code']}) · {shown.index[0]:%Y-%m-%d} ~ {shown.index[-1]:%Y-%m-%d} · 확정 일봉")
+    st.caption(f"{listing.at[key, 'Name']} ({listing.at[key, 'Code']}) · {shown.index[0]:%Y-%m-%d} ~ {shown.index[-1]:%Y-%m-%d} · 확정 일봉 · {currency}")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22])
     fig.add_trace(go.Candlestick(x=shown.index, open=shown.Open, high=shown.High, low=shown.Low,
                                  close=shown.Close, name="일봉"), row=1, col=1)
@@ -124,7 +139,7 @@ def render(region, markets, params, ma, min_value, divisor, band):
         total = sum(r["표시 기간 내 박스 안 종가(봉)"] for r in records)
         st.write(f"현재 조건으로 탐지한 {len(records)}개 구간 · 관측 {len(shown)}봉 중 고정 경계 안 종가 {total}봉 ({total/len(shown):.1%})")
         st.caption(f"최대 1,250봉에서 겹치지 않는 박스를 탐지합니다. 음영은 형성 시작부터 돌파 전까지이며, 비율에는 고정 상·하단 안에서 마감한 날만 포함합니다. 종가 돌파 확인폭 {band:g}%.")
-        st.caption(f"탐지 조건 · 최소 {params.min_days}봉 / 최대 {params.max_days}봉 · 박스 폭 {params.max_width_pct:g}% 이하 · 상하단 접촉 각각 {params.min_touches}회 · 가격 기준 {'종가' if params.use_close else '고가·저가'}")
+        st.caption(f"탐지 조건 · 최소 {params.min_days}봉 / 최대 {params.max_days}봉 · 박스 폭 {params.max_width_pct:g}% 이하 · 상하단 접촉 각각 {params.min_touches}회 · 가격 기준 {'종가' if params.use_close else '고가·저가'} · 최소 평균 거래대금 {min_value:g}{'억원' if region == 'kr' else '백만 USD'}")
         st.info("표시된 비율은 현재 조건과 최초 탐지 경계로 집계한 값입니다. 폭이 더 넓은 횡보나 돌파 후 새 박스를 형성하는 기간은 추가로 잡힐 수 있습니다. 왼쪽 검색 조건을 바꾸면 과거 이력도 다시 계산합니다.")
         if records:
             st.dataframe(pd.DataFrame(records[::-1]), hide_index=True)

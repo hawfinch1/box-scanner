@@ -12,7 +12,7 @@ import outcomes
 import mobile_ui
 
 # Hot updates can retain the previous helper module in Streamlit's process.
-if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 1:
+if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 2:
     import importlib
     importlib.reload(mobile_ui)
 import related_etfs
@@ -132,7 +132,7 @@ with st.sidebar:
             ref_side = st.radio("현재가가", ["above", "below"], horizontal=True,
                                 format_func=lambda s: f"{ref_opt} 위" if s == "above" else f"{ref_opt} 아래")
 
-if not market_opt:
+if not market_opt and not (direct_run or st.session_state.get("direct_search")):
     st.warning("시장을 하나 이상 선택하세요.")
     st.stop()
 
@@ -166,6 +166,9 @@ if run or main_run or recent_run:
     st.session_state.pop("direct_search", None)
 if st.session_state.get("direct_search"):
     import stock_history
+    if getattr(stock_history, "GLOBAL_SEARCH_VERSION", None) != 1:
+        import importlib
+        importlib.reload(stock_history)
     markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
     stock_history.render(region, markets, params, ma, min_value, R["value_div"], recent_band)
     st.stop()

@@ -16,6 +16,7 @@ export default function({parentElement, data}) {
 
     let disposed = false;
     let gesture = null;
+    let mouseGesture = null;
     let touchSession = false;
     let frame = 0;
     let pending = null;
@@ -58,7 +59,13 @@ export default function({parentElement, data}) {
         const change = (s, anchor, shift) => {
             const span = s.hi - s.lo;
             const lo = s.lo + span * anchor * (1 - factor) + shift * span;
-            return [s.axis.l2r(lo), s.axis.l2r(lo + span * factor)];
+            let lower = lo;
+            let width = span * factor;
+            const min = s.axis.minallowed == null ? -Infinity : s.axis.r2l(s.axis.minallowed);
+            const max = s.axis.maxallowed == null ? Infinity : s.axis.r2l(s.axis.maxallowed);
+            width = Math.min(width, max - min);
+            lower = Math.max(min, Math.min(lower, max - width));
+            return [s.axis.l2r(lower), s.axis.l2r(lower + width)];
         };
         const xr = change(x, anchorX, dx);
         return {
@@ -90,6 +97,40 @@ export default function({parentElement, data}) {
                 }
             });
         }
+        // Move all traces and shapes via relayout. Native drag transforms can
+        // leave candle layers offset when a constrained axis reaches its limit.
+        listen(plot, 'pointerdown', (event) => {
+            if (event.pointerType !== 'mouse' || event.button !== 0 ||
+                !event.target.closest('.nsewdrag')) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            plot.setPointerCapture(event.pointerId);
+            mouseGesture = {
+                x: event.clientX, y: event.clientY,
+                xaxis: axisState(plot._fullLayout.xaxis),
+                yaxis: axisState(plot._fullLayout.yaxis),
+                width: plot._fullLayout.xaxis._length,
+                height: plot._fullLayout.yaxis._length,
+            };
+        }, {capture: true});
+        listen(plot, 'mousedown', (event) => {
+            if (!event.target.closest('.nsewdrag')) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }, {capture: true});
+        listen(plot, 'pointermove', (event) => {
+            if (!mouseGesture) return;
+            const g = mouseGesture;
+            queue(rangeUpdate(g.xaxis, g.yaxis, 1,
+                -(event.clientX - g.x) / g.width,
+                (event.clientY - g.y) / g.height));
+        });
+        const finishMouse = (event) => {
+            mouseGesture = null;
+            if (plot.hasPointerCapture(event.pointerId)) plot.releasePointerCapture(event.pointerId);
+        };
+        listen(plot, 'pointerup', finishMouse);
+        listen(plot, 'pointercancel', finishMouse);
         listen(plot, 'touchstart', (event) => {
             // Prevent Plotly's native single-finger drag without cancelling page scroll.
             event.stopImmediatePropagation();

@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v2 as components
 from plotly.offline import get_plotlyjs
 
-CHART_BOUNDS_VERSION = 1
+CHART_BOUNDS_VERSION = 2
 _ASSETS = Path(__file__).parent / "ui"
 
 
