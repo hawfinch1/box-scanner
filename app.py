@@ -12,7 +12,7 @@ import outcomes
 import mobile_ui
 
 # Hot updates can retain the previous helper module in Streamlit's process.
-if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 2:
+if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 3:
     import importlib
     importlib.reload(mobile_ui)
 import related_etfs
