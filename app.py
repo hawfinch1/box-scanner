@@ -12,10 +12,13 @@ import outcomes
 import mobile_ui
 
 # Hot updates can retain the previous helper module in Streamlit's process.
-if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 3:
+if getattr(mobile_ui, "CHART_BOUNDS_VERSION", None) != 4:
     import importlib
     importlib.reload(mobile_ui)
 import related_etfs
+if getattr(related_etfs, "ETF_LOOKUP_VERSION", None) != 1:
+    import importlib
+    importlib.reload(related_etfs)
 
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
 mobile_ui.setup_mobile_ui()
@@ -166,7 +169,7 @@ if run or main_run or recent_run:
     st.session_state.pop("direct_search", None)
 if st.session_state.get("direct_search"):
     import stock_history
-    if getattr(stock_history, "GLOBAL_SEARCH_VERSION", None) != 1:
+    if getattr(stock_history, "GLOBAL_SEARCH_VERSION", None) != 2:
         import importlib
         importlib.reload(stock_history)
     markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
@@ -264,7 +267,8 @@ if "recent_view" in st.session_state:
                                    ax=-40, ay=-25, showarrow=True, row=1, col=1)
                 fig.update_layout(height=520, xaxis_rangeslider_visible=False)
                 mobile_ui.render_chart(fig, f"{item['종목명']} ({item['종목코드']}) · {direction} 돌파",
-                                       key=f"recent_chart_{direction}_{item['종목코드']}")
+                                       key=f"recent_chart_{direction}_{item['종목코드']}",
+                                       currency="KRW" if market == REGIONS["kr"]["label"] else "USD")
             related_etfs.render(item["종목코드"], "kr" if market == REGIONS["kr"]["label"] else "us", direction)
         else:
             st.caption("해당 종목이 없습니다.")
@@ -548,6 +552,7 @@ fig.update_layout(
 mobile_ui.render_chart(
     fig, f"{int(row['박스기간(일)'])}거래일 박스 · 폭 {row['박스폭(%)']:.1f}% (노란 영역)",
     key=f"price_chart_{row['Key']}",
+    currency="KRW" if st.session_state["region"] == "kr" else "USD",
 )
 
 st.caption("※ 시세는 네이버 금융 일봉 기준입니다. 박스권은 과거 가격 패턴이며 향후 방향을 알려주지 않습니다. "

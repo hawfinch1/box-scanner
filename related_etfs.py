@@ -1,5 +1,8 @@
 """운용사 공시에서 확인한 ETF 연결. 국내 과거 공시와 갱신형 공시를 구분한다."""
 import io
+from urllib.parse import quote
+
+ETF_LOOKUP_VERSION = 1
 
 import pandas as pd
 import requests
@@ -26,8 +29,9 @@ def render(code, region, key):
     if not st.checkbox("관련 ETF 보기", key=f"etfs_{key}_{region}_{code}"):
         return
     st.caption("조회 범위 · SPY 운용사 편입표, 국내 과거 공시 일부, 테슬라 일간 추종 상품 2개")
-    st.info("국내 편입 ETF 목록은 일부 과거 공시만 연결한 상태입니다. 최신 전체 편입 목록의 수집은 준비 중입니다.")
-    st.link_button("ETF CHECK에서 편입 종목 검색", "https://www.etfcheck.co.kr/mobile/searchPdf")
+    st.link_button(f"ETF CHECK에서 {code} 편입 ETF 바로 확인",
+                   f"https://www.etfcheck.co.kr/mobile/searchPdf/{quote(str(code), safe='')}")
+    st.caption("ETF CHECK 결과 조회에는 해당 사이트 로그인이 필요합니다. 아래 표는 별도로 확보한 일부 자료입니다.")
     rows = []
 
     def add(market, fund, relation, date, source):

@@ -9,7 +9,7 @@ import history_cases
 import mobile_ui
 import related_etfs
 
-GLOBAL_SEARCH_VERSION = 1
+GLOBAL_SEARCH_VERSION = 2
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -132,7 +132,7 @@ def render(region, markets, params, ma, min_value, divisor, band):
                           row=1, col=1)
     fig.update_layout(height=620, xaxis_rangeslider_visible=False)
     mobile_ui.render_chart(fig, f"{listing.at[key, 'Name']} · 과거 박스",
-                           key=f"history_chart_{region}_{key}")
+                           key=f"history_chart_{region}_{key}", currency="KRW" if region == "kr" else "USD")
     if any(full.Close.rolling(n).mean().reindex(shown.index).isna().any() for n in chart_periods):
         st.caption("상장 초기 등 이전 시세가 부족한 구간의 이동평균선은 계산 가능한 날부터 표시합니다.")
     if cases is not None:

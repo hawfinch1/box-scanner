@@ -9,7 +9,7 @@ import streamlit as st
 import streamlit.components.v2 as components
 from plotly.offline import get_plotlyjs
 
-CHART_BOUNDS_VERSION = 3
+CHART_BOUNDS_VERSION = 4
 _ASSETS = Path(__file__).parent / "ui"
 
 
@@ -88,9 +88,16 @@ def _chart_component(version):
     )
 
 
-def render_chart(fig, title: str, *, key: str):
+def render_chart(fig, title: str, *, key: str, currency: str | None = None):
     fig.update_layout(title=None, showlegend=False, dragmode="pan",
                       margin=dict(l=48, r=14, t=12, b=35), autosize=True)
+    if currency in ("KRW", "USD"):
+        fig.update_layout(margin=dict(l=100, r=14, t=12, b=35))
+        fig.update_yaxes(tickprefix="$" if currency == "USD" else "",
+                         ticksuffix="원" if currency == "KRW" else "",
+                         tickformat=",.2f" if currency == "USD" else ",.0f",
+                         title_text="가격", row=1, col=1)
+        fig.update_yaxes(title_text="거래량(주)", row=2, col=1)
     dates = pd.DatetimeIndex([date for trace in fig.data
                               if trace.type == "candlestick" for date in trace.x])
     if len(dates):

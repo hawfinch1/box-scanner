@@ -16,10 +16,13 @@ class ChartBoundsTests(unittest.TestCase):
                                      low=[9]*3, close=[11]*3), row=1, col=1)
         fig.add_trace(go.Bar(x=dates, y=[100]*3), row=2, col=1)
         with patch.object(mobile_ui, "_chart_component") as component:
-            mobile_ui.render_chart(fig, "test", key="test")
+            mobile_ui.render_chart(fig, "test", key="test", currency="USD")
             layout = component.return_value.call_args.kwargs["data"]["figure"]["layout"]
         for axis in ("xaxis", "xaxis2"):
             self.assertEqual(layout[axis]["minallowed"], dates[0].isoformat())
             self.assertEqual(layout[axis]["maxallowed"], dates[-1].isoformat())
         for axis in ("yaxis", "yaxis2"):
             self.assertEqual(layout[axis]["minallowed"], 0)
+
+        self.assertEqual(layout["yaxis"]["tickprefix"], "$")
+        self.assertNotEqual(layout["yaxis2"].get("tickprefix"), "$")
