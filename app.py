@@ -163,11 +163,23 @@ def load_market(region):
     st.stop()
 
 
+def open_stock_history(key):
+    st.session_state["history_stock"] = key
+    st.session_state["direct_search"] = True
+
+
+def return_to_results():
+    st.session_state.pop("direct_search", None)
+
+
 if direct_run:
     st.session_state["direct_search"] = True
 if run or main_run or recent_run:
     st.session_state.pop("direct_search", None)
 if st.session_state.get("direct_search"):
+    if "result" in st.session_state or "recent_view" in st.session_state:
+        st.button("검색 결과로 돌아가기",
+                  on_click=return_to_results, key="history_back")
     import stock_history
     if getattr(stock_history, "GLOBAL_SEARCH_VERSION", None) != 2:
         import importlib
@@ -217,6 +229,7 @@ if recent_run:
     st.session_state["recent_prices"] = {
         r["종목코드"]: confirmed[code_to_key.at[r["종목코드"]]] for r in rows
     }
+    st.session_state["recent_keys"] = dict(code_to_key)
     st.session_state["recent_epoch"] = meta["prov_date"]
     st.session_state["recent_view"] = (rows, calendar[-1].date() if len(calendar) >= 2 else None, recent_band, R["label"])
 
@@ -244,6 +257,12 @@ if "recent_view" in st.session_state:
                                  selection_mode="single-row", key=f"recent_table_{market}_{date}_{used_band}_{direction}")
             selected = event.selection.rows
             item = found[selected[0]] if selected and selected[0] < len(found) else found[0]
+            stock_key = st.session_state.get("recent_keys", {}).get(item["종목코드"])
+            if stock_key:
+                name_col, action_col = st.columns([3, 2])
+                name_col.markdown(f"**{item['종목명']} ({item['종목코드']})**")
+                action_col.button("개별주·과거 박스 보기", key=f"open_recent_history_{direction}",
+                                  on_click=open_stock_history, args=(stock_key,))
             prices = st.session_state.get("recent_prices", {}).get(item["종목코드"])
             if prices is None:
                 st.info("최근 돌파 검색 버튼을 다시 눌러 차트 시세를 불러오세요.")
@@ -436,6 +455,7 @@ cols += ["시작일", "종목코드", "시장"]
 pf = R["price_fmt"]
 event = st.dataframe(
     view[cols],
+    key="scan_results",
     hide_index=True,
     use_container_width=True,
     on_select="rerun",
@@ -458,11 +478,19 @@ st.download_button("CSV로 받기", view[cols].to_csv(index=False).encode("utf-8
 
 st.divider()
 rows = event.selection.rows if event and event.selection else []
-row = view.iloc[rows[0]] if rows else view.iloc[0]
+if rows:
+    row = view.iloc[rows[0]]
+    st.session_state["selected_scan_stock"] = row["Key"]
+else:
+    previous = view[view["Key"] == st.session_state.get("selected_scan_stock")]
+    row = previous.iloc[0] if len(previous) else view.iloc[0]
 if not rows:
     st.caption("표에서 종목을 클릭하면 아래 선정 이유와 차트가 바뀝니다.")
 
-st.subheader(f"{row['종목명']} ({row['종목코드']})")
+name_col, action_col = st.columns([3, 2])
+name_col.subheader(f"{row['종목명']} ({row['종목코드']})")
+action_col.button("개별주·과거 박스 보기", key="open_scan_history",
+                  on_click=open_stock_history, args=(row["Key"],))
 related_etfs.render(row["종목코드"], st.session_state["region"], "scan")
 
 # 선정 이유: 조건별 실제 값과 기준을 나란히
