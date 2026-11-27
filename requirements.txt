@@ -5,3 +5,4 @@ requests>=2.31
 plotly>=5.20
 finance-datareader>=0.9.90
 tzdata
+exchange-calendars==4.13.3

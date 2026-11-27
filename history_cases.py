@@ -35,7 +35,7 @@ def _thresholds(upper, lower, rule, band_pct):
 
 def collect_cases(histories, p, ma, min_value=0.0, value_div=1e8,
                   provisional_date=None, progress=None, listing=None,
-                  calendar=None, collected_at=None, errors=None, rule="v1", band_pct=None):
+                  calendar=None, collected_at=None, errors=None, rule="v1", band_pct=None, close_policy=None):
     """종목별 과거 사례를 비중첩 방식으로 수집한다.
 
     listing: Key·Code·Name·Market 열이 있는 종목 목록(있으면 종목코드·종목명·시장 기록)
@@ -46,7 +46,8 @@ def collect_cases(histories, p, ma, min_value=0.0, value_div=1e8,
     version = rule_version(rule, band_pct)
     rows = []
     settings = json.dumps({"box": asdict(p), "ma": asdict(ma),
-                           "min_value": min_value, "value_div": value_div},
+                           "min_value": min_value, "value_div": value_div,
+                           **({"close_policy": close_policy} if close_policy else {})},
                           sort_keys=True, ensure_ascii=False)
     info = listing.set_index("Key") if listing is not None and not listing.empty else None
     cal = pd.DatetimeIndex(calendar) if calendar is not None else None

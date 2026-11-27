@@ -41,21 +41,29 @@ def _load(listing: pd.DataFrame, fetcher, label: str, region: str) -> tuple[pd.D
     now = dt.datetime.now(dt.timezone.utc)
     data = box.fetch_many(listing["Key"].tolist(), HISTORY_DAYS, fetcher, progress=tick)
     bar.empty()
+    provisional = box.provisional_date(region, now)
+    if region == "kr":
+        # 09:00 전 미리 도착한 새 날짜 봉도 해당 수집 회차의 분석에서 제외.
+        data = {k: df.loc[:pd.Timestamp(provisional)] for k, df in data.items()}
+
     meta = {
         "requested": len(listing),
         "fetched": len(data),
         "failed": [k for k in listing["Key"] if k not in data],
         "fetched_at": now.astimezone(KST).strftime("%Y-%m-%d %H:%M"),
-        # 수집 시점에 장이 열려 있었다면, 그날 봉은 잠정값
-        "prov_date": box.provisional_date(region, now),
+        # 수집 시작 시각에 결정된 잠정 기준을 시세와 함께 보존한다.
+        "prov_date": provisional,
     }
     return listing, data, meta
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_kr():
+def load_kr(provisional_session):
     """국내 전 종목 목록과 일봉을 받아 30분간 서버에 캐시(모든 접속자가 공유)."""
-    return _load(box.list_krx(KR_MARKETS), box.fetch_krx, "국내 전 종목", "kr")
+    snapshot = _load(box.list_krx(KR_MARKETS), box.fetch_krx, "국내 전 종목", "kr")
+    if not snapshot[1]:
+        raise ValueError("국내 종목 시세가 없습니다.")
+    return snapshot
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -101,9 +109,8 @@ with st.sidebar:
         no_pinned = st.checkbox("가격 고정 종목 제외", value=True,
                                 help=f"인수합병 발표 후 매수가 근처에 묶여 거의 움직이지 않는 종목처럼, "
                                      f"하루 등락률 표준편차가 {PINNED_VOL}% 미만인 종목을 뺍니다.")
-        drop_prov = st.checkbox("장중 잠정 봉 제외 (확정 종가로만 분석)", value=True,
-                                help="장이 열려 있는 동안 오늘 봉은 계속 바뀝니다. 켜 두면 전 거래일까지의 "
-                                     "확정 종가로만 판별합니다.")
+        drop_prov = st.checkbox("잠정 봉 제외 (확정 종가로만 분석)", value=True,
+                                help="국내는 다음 거래일 오전 9시 이후 새로 받은 시세부터 확정 대상으로 봅니다. 미국은 현지 장중 기준입니다.")
 
     with st.expander("📈 이동평균선"):
         ma_periods = sorted(st.multiselect("사용할 이동평균선 (일)", MA_CHOICES, default=[5, 20, 60],
@@ -131,29 +138,47 @@ ma = box.MAParams(
     ref_period=int(ref_opt.removesuffix("일선")) if ref_opt != "사용 안 함" else None, ref_side=ref_side,
 )
 
+def load_market(region):
+    if region == "us":
+        return load_us()
+    try:
+        for _ in range(2):
+            session = box.provisional_date("kr")
+            listing, raw, meta = load_kr(session)
+            if session == meta["prov_date"] == box.provisional_date("kr"):
+                return listing, raw, meta
+    except Exception as exc:
+        st.error(f"국내 시세 또는 거래일 달력 조회 실패 · {exc}")
+    st.warning("국내 종가 기준일을 확인할 수 없습니다. 잠시 후 다시 검색하세요.")
+    st.stop()
+
+
 run = run or main_run
 if run:
     st.session_state.pop("recent_view", None)
     st.session_state.pop("past_cases", None)
     st.session_state.pop("past_sig", None)
-    listing, all_hist, meta = load_kr() if region == "kr" else load_us()
+    listing, all_hist, meta = load_market(region)
     markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
     listing = listing[listing["Market"].isin(markets)]
     keys = set(listing["Key"])
     raw = {k: v for k, v in all_hist.items() if k in keys}
     histories, prep = box.prepare(raw, meta["prov_date"], drop_prov, min_days)
+    confirmed_hist, confirmed_info = (box.prepare(raw, meta["prov_date"], True, min_days)
+                                      if not drop_prov else (histories, prep))
     with st.spinner("박스권 판별 중…"):
         st.session_state.update(
             result=box.scan(histories, listing, params, ma, min_value, R["value_div"]),
             histories=histories, region=region, ma=ma, params=params, min_value=min_value,
-            listing=listing,
+            listing=listing, confirmed_hist=confirmed_hist, confirmed_info=confirmed_info,
             status={**prep, "requested": len(listing), "fetched": len(raw),
                     "failed": len(keys) - len(raw), "fetched_at": meta["fetched_at"],
                     "prov_date": meta["prov_date"], "drop_prov": drop_prov},
         )
 
 if recent_run:
-    listing, market_hist, meta = load_kr() if region == "kr" else load_us()
+    st.session_state.pop("recent_view", None)
+    listing, market_hist, meta = load_market(region)
     markets = market_opt + (["KOSDAQ GLOBAL"] if "KOSDAQ" in market_opt else [])
     listing = listing[listing["Market"].isin(markets)]
     raw = {k: market_hist[k] for k in listing["Key"] if k in market_hist}
@@ -169,12 +194,25 @@ if recent_run:
     st.session_state["recent_prices"] = {
         r["종목코드"]: confirmed[code_to_key.at[r["종목코드"]]] for r in rows
     }
-    st.session_state["recent_view"] = (rows, info["ref_date"], recent_band, R["label"])
+    st.session_state["recent_epoch"] = meta["prov_date"]
+    st.session_state["recent_view"] = (rows, calendar[-1].date() if len(calendar) >= 2 else None, recent_band, R["label"])
 
 if "recent_view" in st.session_state:
     records, date, used_band, market = st.session_state["recent_view"]
     st.subheader("방금 박스 돌파한 종목")
-    st.caption(f"{market} · 마지막 검색 기준일 {date} · 직전 거래일 박스 대비 확정 종가 {used_band:g}% 이상 이탈")
+    if market == REGIONS["kr"]["label"]:
+        try:
+            epoch = box.provisional_date("kr")
+        except ValueError:
+            st.warning("국내 거래일 달력을 확인할 수 없습니다.")
+            st.stop()
+        if epoch != st.session_state.get("recent_epoch"):
+            st.info("국내 종가 기준일이 바뀌었습니다. 최근 돌파 버튼을 다시 눌러 주세요.")
+            st.stop()
+    if date is None:
+        st.warning("돌파를 비교할 확정 거래일 시세가 부족합니다. 다시 검색하세요.")
+        st.stop()
+    st.caption(f"{market} · {date} 종가 기준 · 직전 거래일 박스 대비 확정 종가 {used_band:g}% 이상 이탈")
     for direction in ("상방", "하방"):
         found = [r for r in records if r["방향"] == direction]
         st.markdown(f"**{direction} 돌파 · {len(found)}종목**")
@@ -212,7 +250,7 @@ if "recent_view" in st.session_state:
     st.stop()
 
 # 이전 버전에서 남은 세션(일부 키만 있음)은 결과가 없는 것으로 취급해 새로 스캔하게 한다
-_NEEDED = ("result", "histories", "region", "ma", "params", "min_value", "listing", "status")
+_NEEDED = ("result", "histories", "region", "ma", "params", "min_value", "listing", "status", "confirmed_hist", "confirmed_info")
 if not all(k in st.session_state for k in _NEEDED):
     st.info("**스캔하기**를 누르면 기본 조건으로 바로 찾습니다. 조건은 왼쪽 위 **설정 변경** 버튼에서 바꿀 수 있어요. "
             "첫 스캔은 전 종목 시세를 받느라 30초~1분 걸리고, "
@@ -238,16 +276,32 @@ ma_used: box.MAParams = st.session_state["ma"]
 p_used: box.BoxParams = st.session_state["params"]
 S = st.session_state["status"]
 
+confirmed_hist = st.session_state["confirmed_hist"]
+confirmed_info = st.session_state["confirmed_info"]
+confirmed_date = confirmed_info["ref_date"]
+if st.session_state["region"] == "kr":
+    try:
+        current_session = box.provisional_date("kr")
+    except ValueError:
+        st.warning("국내 거래일 달력을 확인할 수 없습니다.")
+        st.stop()
+    if S["prov_date"] != current_session:
+        st.info("국내 종가 기준일이 바뀌었습니다. 스캔하기를 눌러 시세를 새로 받으세요.")
+        st.stop()
+
 # 데이터 상태
+if S["ref_date"] is None:
+    st.warning("기준일을 확인할 수 있는 시세가 없습니다. 다시 검색하세요.")
+    st.stop()
 if S["provisional"]:
-    bar_state = "⚠️ 장중 잠정값"
-    bar_help = f"수집 시점에 장이 열려 있어 마지막 봉({S['ref_date']})은 이후 바뀔 수 있습니다."
+    bar_state = "⚠️ 잠정 종가"
+    bar_help = f"수집 시점의 마지막 봉({S['ref_date']})은 이후 바뀔 수 있습니다."
 elif S["drop_prov"] and S["prov_date"] is not None:
     bar_state = "✅ 확정 종가"
-    bar_help = f"장중이라 오늘({S['prov_date']}) 잠정 봉은 빼고 전 거래일 확정 종가까지만 분석했습니다."
+    bar_help = f"잠정 기준일({S['prov_date']})의 봉을 제외했습니다."
 else:
     bar_state = "✅ 확정 종가"
-    bar_help = f"수집 시점에 장이 닫혀 있었습니다({R['close_note']} 이후)."
+    bar_help = "수집 시점의 시장별 확정 기준을 충족한 봉입니다."
 
 c1, c2, c3 = st.columns(3)
 c1.metric("횡보 후보", f"{len(res):,}개", help="모든 조건을 통과한 종목 수")
@@ -280,7 +334,7 @@ with st.expander("고정 박스 관찰 · 상단 접근 / 하단 반등"):
     st.caption("조회하면 직전 확정 거래일의 박스를 먼저 등록하고 없으면 최신 봉을 확인합니다. "
                "같은 세션·검색 조건에서 다시 조회하면 등록한 경계를 유지합니다. "
                "상·하단 접근은 박스 높이의 바깥쪽 20% 기준입니다.")
-    watch_sig = (st.session_state["region"], tuple(sorted(st.session_state["listing"]["Market"].unique())),
+    watch_sig = (box.KR_CLOSE_POLICY if st.session_state["region"] == "kr" else "us",st.session_state["region"], tuple(sorted(st.session_state["listing"]["Market"].unique())),
                  repr(p_used), repr(ma_used), st.session_state["min_value"], watch_band)
     st.caption("골든크로스는 5·20일선 모두가 60일선 위에 처음 모인 날입니다. 이평선 방향은 5봉 전 대비, Supertrend는 ATR 10·배수 3, 밴드는 20봉·표준편차 2배 기준입니다.")
     if st.button("후보 목록 조회"):
@@ -288,18 +342,16 @@ with st.expander("고정 박스 관찰 · 상단 접근 / 하단 반등"):
         previous = old.get("active", {}) if old.get("sig") == watch_sig else {}
         with st.spinner("확정 종가와 고정 경계 비교 중…"):
             active, highs, lows = box_watch.candidates(
-                previous, histories, st.session_state["listing"], p_used, ma_used,
-                st.session_state["min_value"], R["value_div"], S["ref_date"], watch_band, S["prov_date"])
+                previous, confirmed_hist, st.session_state["listing"], p_used, ma_used,
+                st.session_state["min_value"], R["value_div"], confirmed_date, watch_band, S["prov_date"])
         from indicators import indicators
         gold = []
         names = st.session_state["listing"].set_index("Key")
         lookup = {}
         for key, (detected, top, bottom) in active.items():
-            if top is None or key not in histories:
+            if top is None or key not in confirmed_hist:
                 continue
-            daily = histories[key]
-            if S["prov_date"] is not None:
-                daily = daily[daily.index.date != S["prov_date"]]
+            daily = confirmed_hist[key]
             if daily.empty:
                 continue
             signal = indicators(daily)
@@ -431,14 +483,14 @@ show_n = max(60, int(row["박스기간(일)"]) * 3)  # 박스가 잘 보이도�
 df = full.tail(show_n)
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def earlier_chart_prices(region_key, symbol, count):
+def earlier_chart_prices(region_key, symbol, count, provisional_session):
     fetch = box.fetch_krx if region_key == "kr" else box.fetch_us
     return fetch(symbol, count)
 
 prices = full["Close"]
 longest = max(ma_used.periods, default=1)
 if len(full) - len(df) < longest - 1:
-    extra = earlier_chart_prices(st.session_state["region"], row["Key"], show_n + longest - 1)
+    extra = earlier_chart_prices(st.session_state["region"], row["Key"], show_n + longest - 1, S["prov_date"])
     if extra is not None and full.index[0] in extra.index:
         # 같은 수정주가 기준인지 확인한 뒤 스캔 시작일 이전 가격만 사용한다.
         if extra.at[full.index[0], "Close"] == prices.iloc[0]:
@@ -502,18 +554,16 @@ if st.session_state.get("past_sig") != sig:
     with st.spinner(f"과거 사례 수집 중… ({len(pool)}종목)"):
         errs: list = []
         st.session_state["past_cases"] = history_cases.collect_cases(
-            {k: histories[k] for k in pool if k in histories}, p_used, ma_used,
+            {k: confirmed_hist[k] for k in pool if k in confirmed_hist}, p_used, ma_used,
             st.session_state["min_value"], R["value_div"], S["prov_date"],
-            listing=listing_s, calendar=S["calendar"], errors=errs, rule="v2", band_pct=band,
+            listing=listing_s, calendar=confirmed_info["calendar"], errors=errs, rule="v2", band_pct=band,
+            close_policy=box.KR_CLOSE_POLICY if st.session_state["region"] == "kr" else None,
             collected_at=dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M KST"))
         st.session_state["past_errors"] = errs
         st.session_state["past_sig"] = sig
 cases = st.session_state["past_cases"]
 
-_own = histories[row["Key"]]
-if S["prov_date"] is not None:  # 수집은 잠정 봉을 항상 빼므로 확정된 마지막 봉 기준으로 맞춘다
-    _own = _own[_own.index.date != S["prov_date"]]
-target = history_cases.current_case(cases, row["Key"], _own.index[-1].date()) if len(_own) else None
+target = history_cases.current_case(cases, row["Key"], confirmed_date) if row["Key"] in confirmed_hist else None
 
 tol_days = st.session_state.get("tol_days", 10)
 tol_width = st.session_state.get("tol_width", 3.0)
@@ -526,13 +576,13 @@ if target is None:
 else:
     age = int(target["탐지후관찰봉수"])
     others = cases[cases["사례ID"] != target["사례ID"]]
-    others = others[pd.to_datetime(others["탐지일"]) < pd.Timestamp(S["ref_date"])]
-    similar = history_cases.similar_cases(others, target, tol_days, tol_width, tol_pos, S["ref_date"])
+    others = others[pd.to_datetime(others["탐지일"]) < pd.Timestamp(confirmed_date)]
+    similar = history_cases.similar_cases(others, target, tol_days, tol_width, tol_pos, confirmed_date)
     with st.expander("전략별 과거 유사 사례 비교", expanded=True):
         from strategy_cases import strategy_cases
         st.caption(f"현재 박스의 탐지 당시 기간·폭·가격 위치가 비슷했던 사례만 비교합니다. "
                    f"각 전략의 첫 신호 다음 {horizon}개 확정 봉을 관찰합니다. 현재 박스 경과 일수로 맞춘 통계는 아닙니다.")
-        evidence = strategy_cases(similar, histories, S["ref_date"], S["prov_date"], horizon)
+        evidence = strategy_cases(similar, confirmed_hist, confirmed_date, S["prov_date"], horizon)
         for strategy, success, description in (
             ("상방 돌파", "상단 유지", "상방 돌파 후 종가가 원래 상단 아래로 한 번도 내려오지 않은 경우"),
             ("하단 회복", "중앙 도달", "전일 하단 이하에서 하단 위·중앙 아래로 회복한 뒤 하방 돌파보다 먼저 종가가 중앙에 닿은 경우"),
@@ -623,12 +673,11 @@ with st.expander(f"수집 대상 {len(pool)}종목 (표 상위 20개 자동 선�
         st.warning(f"시세 오류로 {len(errs)}종목 제외: " + ", ".join(labels.get(k, k) for k, _ in errs))
     rng = []
     for k in pool:
-        h = histories.get(k)
+        h = confirmed_hist.get(k)
         if h is None or not len(h):
             continue
-        h = h[h.index.date != S["prov_date"]] if S["prov_date"] else h
         rng.append({"종목": labels.get(k, k), "시세 시작일": h.index[0].date(), "시세 마지막일": h.index[-1].date(),
-                    "보유 봉수": len(h), "누락일": box.missing_days(h, S["calendar"], h.index[0])})
+                    "보유 봉수": len(h), "누락일": box.missing_days(h, confirmed_info["calendar"], h.index[0])})
     st.dataframe(pd.DataFrame(rng), hide_index=True, use_container_width=True)
 
 with st.expander(f"사례 목록과 CSV ({len(cases)}건)"):

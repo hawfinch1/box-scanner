@@ -147,18 +147,24 @@ def fetch_many(keys: list[str], days: int, fetcher, workers: int = 16, progress=
 
 # ───────────────────────── 데이터 상태 ─────────────────────────
 
-_MARKET_HOURS = {  # 지역: (시간대, 장 시작, 확정 종가로 볼 시각)
-    "kr": ("Asia/Seoul", dt.time(9, 0), dt.time(15, 40)),
-    "us": ("America/New_York", dt.time(9, 30), dt.time(16, 15)),
-}
+KR_CLOSE_POLICY = "kr-next-session-0900-v1"
 
 
 def provisional_date(region: str, now: dt.datetime | None = None) -> dt.date | None:
-    """지금이 장중(또는 종가 확정 전)이면 오늘 현지 날짜를, 아니면 None을 돌려준다.
-    이 날짜의 일봉은 아직 바뀔 수 있는 잠정값이다."""
+    """수집 시점의 잠정 봉 날짜. 국내는 다음 거래일 09:00에 경계가 이동한다."""
     from zoneinfo import ZoneInfo
-    tz, open_t, settle_t = _MARKET_HOURS[region]
-    now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(ZoneInfo(tz))
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if region == "kr":
+        from exchange_calendars import get_calendar
+        local = now.astimezone(ZoneInfo("Asia/Seoul"))
+        day = local.date()
+        if local.time() < dt.time(9):
+            day -= dt.timedelta(days=1)
+        return get_calendar("XKRX").date_to_session(day, direction="previous").date()
+    if region != "us":
+        raise ValueError(f"지원하지 않는 시장: {region}")
+    now = now.astimezone(ZoneInfo("America/New_York"))
+    open_t, settle_t = dt.time(9, 30), dt.time(16, 15)
     if now.weekday() < 5 and open_t <= now.time() < settle_t:
         return now.date()
     return None
