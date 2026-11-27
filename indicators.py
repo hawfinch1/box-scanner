@@ -2,7 +2,10 @@
 import numpy as np
 
 
-def indicators(df):
+ALIGNMENT_RULE_VERSION = "ordered-ma-first-day-v1"
+
+
+def indicators(df, include_120=False):
     c = df.Close.to_numpy(float)
     n = len(c)
     out = dict.fromkeys(("데드크로스", "골든크로스", "20일선 위치", "20일선 방향", "60일선 방향", "Supertrend", "밴드 폭", "하단 밴드"), "자료 부족")
@@ -14,13 +17,14 @@ def indicators(df):
     if n >= 60:
         diff = c[-20:].mean() - c[-60:].mean()
         out["20일선 위치"] = "60일선 위" if diff > 0 else "60일선 아래" if diff < 0 else "60일선과 같음"
-    if n >= 61:
-        def above(x):
-            return min(x[-5:].mean(), x[-20:].mean()) > x[-60:].mean()
-        out["골든크로스"] = ("유지" if above(c[:-1]) else "오늘 완성") if above(c) else "미충족"
-        def below(x):
-            return max(x[-5:].mean(), x[-20:].mean()) < x[-60:].mean()
-        out["데드크로스"] = ("유지" if below(c[:-1]) else "오늘 완성") if below(c) else "미충족"
+    periods = (5, 20, 60, 120) if include_120 else (5, 20, 60)
+    if n >= periods[-1] + 1:
+        today = np.array([c[-period:].mean() for period in periods])
+        previous = np.array([c[-period-1:-1].mean() for period in periods])
+        for label, sign in (("골든크로스", -1), ("데드크로스", 1)):
+            now_ordered = bool((np.diff(today) * sign > 0).all())
+            was_ordered = bool((np.diff(previous) * sign > 0).all())
+            out[label] = ("유지" if was_ordered else "오늘 완성") if now_ordered else "미충족"
     if n >= 21:
         now, prev = c[-20:], c[-21:-1]
         delta = now.std()/now.mean() - prev.std()/prev.mean()

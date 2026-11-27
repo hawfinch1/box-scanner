@@ -381,17 +381,26 @@ with st.expander("고정 박스 관찰 · 상단 접근 / 하단 반등"):
     st.caption("조회하면 직전 확정 거래일의 박스를 먼저 등록하고 없으면 최신 봉을 확인합니다. "
                "같은 세션·검색 조건에서 다시 조회하면 등록한 경계를 유지합니다. "
                "상·하단 접근은 박스 높이의 바깥쪽 20% 기준입니다.")
-    watch_sig = (box.KR_CLOSE_POLICY if st.session_state["region"] == "kr" else "us",st.session_state["region"], tuple(sorted(st.session_state["listing"]["Market"].unique())),
+    import indicators as indicator_module
+    if getattr(indicator_module, "ALIGNMENT_RULE_VERSION", None) != "ordered-ma-first-day-v1":
+        import importlib
+        importlib.reload(indicator_module)
+    from indicators import ALIGNMENT_RULE_VERSION, indicators
+    alignment_120 = st.checkbox("120일선까지 배열 확인", value=True, key="watch_alignment120")
+    alignment_text = "5 > 20 > 60 > 120" if alignment_120 else "5 > 20 > 60"
+    st.caption(f"정배열은 {alignment_text}일선 순서가 처음 성립한 날입니다. 역배열은 반대 순서입니다. "
+               "값이 같으면 미충족이며, 전일과 비교할 자료가 부족하면 자료 부족으로 표시합니다.")
+    tracking_sig = (box.KR_CLOSE_POLICY if st.session_state["region"] == "kr" else "us",st.session_state["region"], tuple(sorted(st.session_state["listing"]["Market"].unique())),
                  repr(p_used), repr(ma_used), st.session_state["min_value"], watch_band)
-    st.caption("골든크로스는 5·20일선 모두가 60일선 위에 처음 모인 날입니다. 이평선 방향은 5봉 전 대비, Supertrend는 ATR 10·배수 3, 밴드는 20봉·표준편차 2배 기준입니다.")
+    watch_sig = (ALIGNMENT_RULE_VERSION, alignment_120, tracking_sig)
+    st.caption("이평선 방향은 5봉 전 대비, Supertrend는 ATR 10·배수 3, 밴드는 20봉·표준편차 2배 기준입니다.")
     if st.button("후보 목록 조회"):
         old = st.session_state.get("watch_book", {})
-        previous = old.get("active", {}) if old.get("sig") == watch_sig else {}
+        previous = old.get("active", {}) if old.get("tracking_sig", old.get("sig")) == tracking_sig else {}
         with st.spinner("확정 종가와 고정 경계 비교 중…"):
             active, highs, lows = box_watch.candidates(
                 previous, confirmed_hist, st.session_state["listing"], p_used, ma_used,
                 st.session_state["min_value"], R["value_div"], confirmed_date, watch_band, S["prov_date"])
-        from indicators import indicators
         gold = []
         names = st.session_state["listing"].set_index("Key")
         lookup = {}
@@ -401,21 +410,23 @@ with st.expander("고정 박스 관찰 · 상단 접근 / 하단 반등"):
             daily = confirmed_hist[key]
             if daily.empty:
                 continue
-            signal = indicators(daily)
+            signal = indicators(daily, include_120=alignment_120)
+            signal["정배열"] = signal.pop("골든크로스")
+            signal["역배열"] = signal.pop("데드크로스")
             code = names.at[key, "Code"]
             lookup[code] = signal
             price = daily.Close.iloc[-1]
-            if bottom <= price <= top and signal["골든크로스"] == "오늘 완성":
+            if bottom <= price <= top and signal["정배열"] == "오늘 완성":
                 gold.append({"종목명": names.at[key, "Name"], "종목코드": code,
                              "신호일": daily.index[-1].date(), "종가": price, "상단": top,
                              "상단까지(%)": (top/price-1)*100, **signal})
         for record in highs + lows:
             record.update(lookup.get(record["종목코드"], {}))
-        st.session_state["watch_book"] = dict(sig=watch_sig, active=active, highs=highs, lows=lows, gold=gold,
+        st.session_state["watch_book"] = dict(sig=watch_sig, tracking_sig=tracking_sig, active=active, highs=highs, lows=lows, gold=gold,
                                               fetched=S["fetched_at"])
     saved = st.session_state.get("watch_book", {})
     if saved.get("sig") == watch_sig and saved.get("fetched") == S["fetched_at"]:
-        for label, records in (("상단 후보", saved["highs"]), ("하단 후보", saved["lows"]), ("박스 안 골든크로스 · 오늘 완성", saved.get("gold", []))):
+        for label, records in (("상단 후보", saved["highs"]), ("하단 후보", saved["lows"]), ("박스 안 정배열 · 오늘 완성", saved.get("gold", []))):
             st.markdown(f"**{label} · {len(records)}종목**")
             if records:
                 st.dataframe(pd.DataFrame(records), hide_index=True)
